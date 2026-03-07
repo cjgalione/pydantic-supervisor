@@ -1,0 +1,45 @@
+name: Run Python evals
+
+on:
+  push:
+    paths:
+      - "evals/**"
+      - "src/agents/**"
+      - "src/config.py"
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  eval:
+    name: Run evals
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: |
+          uv pip install -r requirements.txt --system
+
+      - name: Run Evals
+        uses: braintrustdata/eval-action@v1
+        with:
+          api_key: ${{ secrets.BRAINTRUST_API_KEY }}
+          runtime: python
+          package_manager: uv
+          root: evals
+          paths: eval_supervisor.py

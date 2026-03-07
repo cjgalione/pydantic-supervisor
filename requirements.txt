@@ -1,0 +1,11 @@
+pydantic-ai
+google-genai
+openai
+tavily-python
+python-dotenv
+braintrust>=0.3.15
+rich
+autoevals
+modal
+fastapi[standard]
+pint
