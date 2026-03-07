@@ -3,6 +3,7 @@ name: Run Python evals
 on:
   push:
     paths:
+      - ".github/workflows/ci.yml"
       - "evals/**"
       - "src/agents/**"
       - "src/config.py"
