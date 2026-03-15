@@ -6,7 +6,7 @@ import modal
 
 # Create image with all dependencies
 modal_image = (
-    modal.Image.debian_slim()
+    modal.Image.debian_slim(python_version="3.12")
     .apt_install("git")
     .pip_install_from_requirements("requirements.txt")
     .add_local_python_source("src")

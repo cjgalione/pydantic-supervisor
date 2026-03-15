@@ -15,9 +15,13 @@ from autoevals import LLMClassifier  # noqa: E402
 from braintrust import Eval  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
-from evals.parameters import ResearchAgentPromptParam, ResearchModelParam  # noqa: E402
+from evals.parameters import (  # noqa: E402
+    ResearchAgentPromptParam,
+    extract_prompt_and_model,
+)
 from src.agents.research_agent import get_research_agent  # noqa: E402
 from src.helpers import run_adk_agent  # noqa: E402
+from src.config import DEFAULT_RESEARCH_AGENT_PROMPT, DEFAULT_RESEARCH_MODEL  # noqa: E402
 from src.tracing import configure_adk_tracing  # noqa: E402
 
 load_dotenv()
@@ -28,27 +32,15 @@ configure_adk_tracing(
 )
 
 
-def _param_value(param: Any, default: Any) -> Any:
-    if param is None:
-        return default
-    if hasattr(param, "value"):
-        return getattr(param, "value")
-    if isinstance(param, type):
-        try:
-            instance = param()
-            if hasattr(instance, "value"):
-                return getattr(instance, "value")
-        except Exception:
-            return default
-    return param
-
-
 async def run_research_task(input: dict, hooks: Any = None) -> dict:
     """Run a research query through the research agent."""
     try:
         params = hooks.parameters if hooks and hasattr(hooks, "parameters") else {}
-        research_agent_prompt = _param_value(params.get("research_agent_prompt"), None)
-        research_model = _param_value(params.get("research_model"), "gemini-2.0-flash-lite")
+        research_agent_prompt, research_model = extract_prompt_and_model(
+            params.get("research_agent_prompt"),
+            default_prompt=DEFAULT_RESEARCH_AGENT_PROMPT,
+            default_model=DEFAULT_RESEARCH_MODEL,
+        )
 
         agent = get_research_agent(
             system_prompt=research_agent_prompt,
@@ -180,6 +172,5 @@ Eval(
     ],  # type: ignore
     parameters={
         "research_agent_prompt": ResearchAgentPromptParam,
-        "research_model": ResearchModelParam,
     },
 )

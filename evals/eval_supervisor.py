@@ -21,15 +21,21 @@ from pydantic import BaseModel  # noqa: E402
 from evals.braintrust_parameter_patch import apply_parameter_patch  # noqa: E402
 from evals.parameters import (  # noqa: E402
     MathAgentPromptParam,
-    MathModelParam,
     PromptModificationParam,
     ResearchAgentPromptParam,
-    ResearchModelParam,
-    SupervisorModelParam,
     SystemPromptParam,
+    extract_prompt_and_model,
 )
 from src.agents.deep_agent import get_supervisor, run_supervisor_with_critic  # noqa: E402
-from src.config import AgentConfig  # noqa: E402
+from src.config import (  # noqa: E402
+    AgentConfig,
+    DEFAULT_MATH_AGENT_PROMPT,
+    DEFAULT_MATH_MODEL,
+    DEFAULT_RESEARCH_AGENT_PROMPT,
+    DEFAULT_RESEARCH_MODEL,
+    DEFAULT_SUPERVISOR_MODEL,
+    DEFAULT_SYSTEM_PROMPT,
+)  # noqa: E402
 from src.helpers import extract_query_from_input  # noqa: E402
 from src.tracing import configure_adk_tracing  # noqa: E402
 
@@ -54,20 +60,39 @@ def unwrap_parameters(params: dict) -> dict:
 
     from pydantic import BaseModel
 
-    result: dict[str, Any] = {}
-    for key, param in params.items():
-        if param is None:
-            continue
+    system_prompt, supervisor_model = extract_prompt_and_model(
+        params.get("system_prompt"),
+        default_prompt=DEFAULT_SYSTEM_PROMPT,
+        default_model=DEFAULT_SUPERVISOR_MODEL,
+    )
+    research_agent_prompt, research_model = extract_prompt_and_model(
+        params.get("research_agent_prompt"),
+        default_prompt=DEFAULT_RESEARCH_AGENT_PROMPT,
+        default_model=DEFAULT_RESEARCH_MODEL,
+    )
+    math_agent_prompt, math_model = extract_prompt_and_model(
+        params.get("math_agent_prompt"),
+        default_prompt=DEFAULT_MATH_AGENT_PROMPT,
+        default_model=DEFAULT_MATH_MODEL,
+    )
 
-        if inspect.isclass(param) and issubclass(param, BaseModel):
-            param_instance = param()
-            result[key] = getattr(param_instance, "value", param_instance)
-        elif isinstance(param, BaseModel):
-            result[key] = getattr(param, "value", param)
-        else:
-            result[key] = param
+    prompt_modification = params.get("prompt_modification")
+    if inspect.isclass(prompt_modification) and issubclass(prompt_modification, BaseModel):
+        prompt_modification = getattr(prompt_modification(), "value", "")
+    elif isinstance(prompt_modification, BaseModel):
+        prompt_modification = getattr(prompt_modification, "value", "")
+    elif prompt_modification is None:
+        prompt_modification = ""
 
-    return result
+    return {
+        "system_prompt": system_prompt,
+        "prompt_modification": prompt_modification,
+        "research_agent_prompt": research_agent_prompt,
+        "math_agent_prompt": math_agent_prompt,
+        "supervisor_model": supervisor_model,
+        "research_model": research_model,
+        "math_model": math_model,
+    }
 
 
 async def run_supervisor_task(input: dict, hooks: Any = None) -> dict[str, Any]:
@@ -617,8 +642,5 @@ Eval(
         "prompt_modification": PromptModificationParam,
         "research_agent_prompt": ResearchAgentPromptParam,
         "math_agent_prompt": MathAgentPromptParam,
-        "supervisor_model": SupervisorModelParam,
-        "research_model": ResearchModelParam,
-        "math_model": MathModelParam,
     },
 )

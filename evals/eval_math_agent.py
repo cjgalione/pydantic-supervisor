@@ -15,8 +15,9 @@ from autoevals import LLMClassifier  # noqa: E402
 from braintrust import Eval  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
-from evals.parameters import MathAgentPromptParam, MathModelParam  # noqa: E402
+from evals.parameters import MathAgentPromptParam, extract_prompt_and_model  # noqa: E402
 from src.agents.math_agent import get_math_agent  # noqa: E402
+from src.config import DEFAULT_MATH_AGENT_PROMPT, DEFAULT_MATH_MODEL  # noqa: E402
 from src.helpers import run_adk_agent  # noqa: E402
 from src.tracing import configure_adk_tracing  # noqa: E402
 
@@ -28,27 +29,15 @@ configure_adk_tracing(
 )
 
 
-def _param_value(param: Any, default: Any) -> Any:
-    if param is None:
-        return default
-    if hasattr(param, "value"):
-        return getattr(param, "value")
-    if isinstance(param, type):
-        try:
-            instance = param()
-            if hasattr(instance, "value"):
-                return getattr(instance, "value")
-        except Exception:
-            return default
-    return param
-
-
 async def run_math_task(input: dict, hooks: Any = None) -> dict:
     """Run a math calculation through the math agent."""
     try:
         params = hooks.parameters if hooks and hasattr(hooks, "parameters") else {}
-        math_agent_prompt = _param_value(params.get("math_agent_prompt"), None)
-        math_model = _param_value(params.get("math_model"), "gemini-2.0-flash-lite")
+        math_agent_prompt, math_model = extract_prompt_and_model(
+            params.get("math_agent_prompt"),
+            default_prompt=DEFAULT_MATH_AGENT_PROMPT,
+            default_model=DEFAULT_MATH_MODEL,
+        )
 
         agent = get_math_agent(system_prompt=math_agent_prompt, model=math_model)
         query = str(input.get("query", ""))
@@ -198,6 +187,5 @@ Eval(
     ],  # type: ignore
     parameters={
         "math_agent_prompt": MathAgentPromptParam,
-        "math_model": MathModelParam,
     },
 )

@@ -1,10 +1,12 @@
 """
 Parameter definitions for Braintrust evals.
 
-These parameters can be configured in the Braintrust playground UI.
-Uses single-field Pydantic models with a 'value' field, which the
-patched Braintrust SDK will unwrap properly.
+Prompt-bearing parameters are represented as Braintrust prompt objects so the
+playground can render prompt editors with model selection instead of plain text
+inputs. Plain scalar parameters continue to use single-field Pydantic models.
 """
+
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -17,17 +19,81 @@ from src.config import (
     DEFAULT_SYSTEM_PROMPT,
 )
 
-# Define parameters as single-field Pydantic models
-# The patched SDK will extract the 'value' field's schema and default
+def _prompt_parameter(*, prompt: str, model: str, description: str) -> dict[str, Any]:
+    """Build a Braintrust prompt parameter with a default system prompt and model."""
+    return {
+        "type": "prompt",
+        "description": description,
+        "default": {
+            "prompt": {
+                "type": "chat",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": prompt,
+                    }
+                ],
+            },
+            "options": {
+                "model": model,
+            },
+        },
+    }
 
 
-class SystemPromptParam(BaseModel):
-    """System prompt parameter for supervisor agent."""
+def extract_prompt_and_model(
+    param: Any,
+    *,
+    default_prompt: str,
+    default_model: str,
+) -> tuple[str, str]:
+    """Extract a system prompt string and model name from a Braintrust prompt object."""
+    if param is None:
+        return default_prompt, default_model
 
-    value: str = Field(
-        default=DEFAULT_SYSTEM_PROMPT,
-        description="Custom system prompt for the supervisor agent.",
-    )
+    prompt_text = default_prompt
+    model_name = default_model
+
+    prompt_block = getattr(param, "prompt", None)
+    if prompt_block is not None:
+        messages = getattr(prompt_block, "messages", None) or []
+        for message in messages:
+            if getattr(message, "role", None) != "system":
+                continue
+
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                prompt_text = content
+                break
+
+            if isinstance(content, list):
+                text_parts: list[str] = []
+                for part in content:
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
+                if text_parts:
+                    prompt_text = "\n".join(text_parts)
+                    break
+
+    options = getattr(param, "options", None) or {}
+    if isinstance(options, dict):
+        maybe_model = options.get("model")
+        if isinstance(maybe_model, str) and maybe_model.strip():
+            model_name = maybe_model
+
+    return prompt_text, model_name
+
+
+# Define scalar parameters as single-field Pydantic models.
+# The patched SDK will extract the 'value' field's schema and default.
+
+
+SystemPromptParam = _prompt_parameter(
+    prompt=DEFAULT_SYSTEM_PROMPT,
+    model=DEFAULT_SUPERVISOR_MODEL,
+    description="Prompt object for the supervisor agent, including its model.",
+)
 
 
 class PromptModificationParam(BaseModel):
@@ -42,46 +108,15 @@ class PromptModificationParam(BaseModel):
     )
 
 
-class ResearchAgentPromptParam(BaseModel):
-    """Research agent prompt parameter."""
-
-    value: str = Field(
-        default=DEFAULT_RESEARCH_AGENT_PROMPT,
-        description="Custom system prompt for the research agent.",
-    )
+ResearchAgentPromptParam = _prompt_parameter(
+    prompt=DEFAULT_RESEARCH_AGENT_PROMPT,
+    model=DEFAULT_RESEARCH_MODEL,
+    description="Prompt object for the research agent, including its model.",
+)
 
 
-class MathAgentPromptParam(BaseModel):
-    """Math agent prompt parameter."""
-
-    value: str = Field(
-        default=DEFAULT_MATH_AGENT_PROMPT,
-        description="Custom system prompt for the math agent.",
-    )
-
-
-class SupervisorModelParam(BaseModel):
-    """Supervisor model selection parameter."""
-
-    value: str = Field(
-        default=DEFAULT_SUPERVISOR_MODEL,
-        description="Model to use for the supervisor agent (e.g., gemini-2.0-flash-lite).",
-    )
-
-
-class ResearchModelParam(BaseModel):
-    """Research model selection parameter."""
-
-    value: str = Field(
-        default=DEFAULT_RESEARCH_MODEL,
-        description="Model to use for the research agent (e.g., gemini-2.0-flash-lite).",
-    )
-
-
-class MathModelParam(BaseModel):
-    """Math model selection parameter."""
-
-    value: str = Field(
-        default=DEFAULT_MATH_MODEL,
-        description="Model to use for the math agent (e.g., gemini-2.0-flash-lite).",
-    )
+MathAgentPromptParam = _prompt_parameter(
+    prompt=DEFAULT_MATH_AGENT_PROMPT,
+    model=DEFAULT_MATH_MODEL,
+    description="Prompt object for the math agent, including its model.",
+)
