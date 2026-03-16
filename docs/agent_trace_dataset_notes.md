@@ -14,6 +14,12 @@ Dataset shape:
 - [research_trace_dataset.jsonl](/Users/curtisjgalione/git/pydantic-supervisor/datasets/research_trace_dataset.jsonl): `input.query` plus expected answer and citation expectations.
 - [math_trace_dataset.jsonl](/Users/curtisjgalione/git/pydantic-supervisor/datasets/math_trace_dataset.jsonl): `input.query` plus expected answer text and a normalized reference answer.
 
+Supervisor curation:
+
+- Favor delegation-heavy examples that clearly require either `ResearchAgent` or `MathAgent`.
+- Prefer research and math prompts that match the cross-project supervisor traffic pattern in Braintrust: factual lookups, current-information questions, and calculation tasks.
+- Exclude ambiguous prompts where the observed route is weak training signal for the intended agent boundary.
+
 Refresh flow:
 
 1. Export the recent traces to `/tmp/pydantic_supervisor_roots.json` and `/tmp/pydantic_supervisor_candidate_spans.json`.
