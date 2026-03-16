@@ -1,5 +1,6 @@
 """Research Agent evaluation focused on web search and information retrieval."""
 
+import json
 import os
 import re
 import sys
@@ -12,7 +13,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from autoevals import LLMClassifier  # noqa: E402
-from braintrust import Eval  # noqa: E402
+from braintrust import Eval, init_dataset  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
 from evals.parameters import (  # noqa: E402
@@ -30,6 +31,9 @@ configure_adk_tracing(
     project_id=os.environ.get("BRAINTRUST_PROJECT_ID"),
     project_name=os.environ.get("BRAINTRUST_PROJECT", "pydantic-supervisor"),
 )
+
+DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
+DEFAULT_BRAINTRUST_DATASET = "Research Trace Dataset"
 
 
 async def run_research_task(input: dict, hooks: Any = None) -> dict:
@@ -96,6 +100,36 @@ RESEARCH_TEST_DATA = [
 ]
 
 
+def load_local_dataset() -> list[dict[str, Any]]:
+    """Load eval data from the checked-in research trace dataset."""
+    dataset_path = project_root / "datasets" / "research_trace_dataset.jsonl"
+    rows: list[dict[str, Any]] = []
+    with dataset_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+def get_eval_data(project_name: str):
+    """Choose local dataset by default, with optional remote dataset override."""
+    use_remote = os.environ.get("BRAINTRUST_USE_REMOTE_DATASET", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if use_remote:
+        return init_dataset(
+            project=project_name,
+            name=os.environ.get("BRAINTRUST_DATASET", DEFAULT_BRAINTRUST_DATASET),
+            api_key=os.environ.get("BRAINTRUST_API_KEY"),
+            org_name=os.environ.get("BRAINTRUST_ORG_NAME", "Braintrust Demos"),
+        )
+    return load_local_dataset()
+
+
 async def web_search_usage_scorer(output, metadata=None):
     """Check if the agent used web search when appropriate."""
     if metadata and metadata.get("used_web_search"):
@@ -159,10 +193,12 @@ answer_quality_scorer = LLMClassifier(
 )
 
 
+project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
+
 Eval(
-    os.environ.get("BRAINTRUST_PROJECT", "pydantic-supervisor"),
+    project_name,
     experiment_name="research-agent",
-    data=RESEARCH_TEST_DATA,  # type: ignore
+    data=get_eval_data(project_name),
     task=run_research_task,
     scores=[
         web_search_usage_scorer,
