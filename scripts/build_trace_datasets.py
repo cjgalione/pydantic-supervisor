@@ -13,20 +13,20 @@ DATASET_DIR = Path(__file__).resolve().parents[1] / "datasets"
 
 SUPERVISOR_QUERIES = [
     "What is 12*9?",
-    "Are you even listening to me? Answer this NOW!",
+    "What is the derivative of sin(x^2)?",
     "Briefly explain the history of the Renaissance.",
     "Research the pros and cons of renewable energy.",
     "What are the main functions of the United Nations?",
     "Integrate cos(x).",
     "How is electricity generated?",
-    "What is the formula for the area of a triangle?",
+    "What is the difference between a virus and a bacteria?",
     "Solve this: 4 + 2 * (8 / 2) - 1.",
-    "Can you write a short poem about nature?",
     "Explain 'confirmation bias'.",
     "How does a solar panel work?",
     "Find the average of the numbers 10, 20, and 30.",
     "What is the current global population?",
-    "Can you tell me a joke?",
+    "Write me a simple HTML page.",
+    "I don't understand this math problem! Explain it again, please!",
 ]
 
 RESEARCH_QUERIES = [
