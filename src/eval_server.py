@@ -1,6 +1,11 @@
 """Modal deployment for Braintrust remote eval dev server."""
 
+from __future__ import annotations
+
 import os
+import re
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import modal
 
@@ -25,6 +30,83 @@ CORS_ALLOWED_HEADERS = [
     "x-stainless-arch",
 ]
 
+CORS_ALLOWED_ORIGINS: list[str | re.Pattern[str]] = [
+    "https://www.braintrust.dev",
+    "https://www.braintrustdata.com",
+    re.compile(r"https://.*\.preview\.braintrust\.dev"),
+]
+
+CORS_EXPOSED_HEADERS = [
+    "x-bt-cursor",
+    "x-bt-found-existing-experiment",
+    "x-bt-span-id",
+    "x-bt-span-export",
+]
+
+
+def _is_allowed_origin(origin: str) -> bool:
+    if not origin:
+        return False
+    for allowed in CORS_ALLOWED_ORIGINS:
+        if isinstance(allowed, str) and origin == allowed:
+            return True
+        if isinstance(allowed, re.Pattern) and allowed.match(origin):
+            return True
+    return False
+
+
+def _with_playground_cors(inner_app: Any) -> Any:
+    """Wrap the Braintrust devserver so browser preflights are handled explicitly."""
+
+    async def wrapped(
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if scope["type"] != "http":
+            await inner_app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        origin = headers.get(b"origin", b"").decode("utf-8")
+        if not origin or not _is_allowed_origin(origin):
+            await inner_app(scope, receive, send)
+            return
+
+        cors_headers = [
+            (b"access-control-allow-origin", origin.encode()),
+            (b"access-control-allow-methods", b"GET, POST, PUT, DELETE, OPTIONS, PATCH"),
+            (b"access-control-allow-headers", ", ".join(CORS_ALLOWED_HEADERS).encode()),
+            (b"access-control-expose-headers", ", ".join(CORS_EXPOSED_HEADERS).encode()),
+            (b"access-control-allow-credentials", b"true"),
+            (b"access-control-max-age", b"86400"),
+        ]
+
+        if scope["method"] == "OPTIONS":
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": cors_headers,
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        async def send_with_cors(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                header_pairs = list(message.get("headers", []))
+                existing = {key.lower() for key, _ in header_pairs}
+                for key, value in cors_headers:
+                    if key.lower() not in existing:
+                        header_pairs.append((key, value))
+                message["headers"] = header_pairs
+            await send(message)
+
+        await inner_app(scope, receive, send_with_cors)
+
+    return wrapped
+
 # Create image with all dependencies
 modal_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -32,6 +114,7 @@ modal_image = (
     .pip_install_from_requirements("requirements.txt")
     .add_local_python_source("src")
     .add_local_python_source("evals")
+    .add_local_dir("datasets", "/root/datasets")
     .add_local_file("dataset.jsonl", "/root/dataset.jsonl")
 )
 
@@ -75,7 +158,6 @@ def braintrust_eval_server():
     from braintrust.cli.eval import EvaluatorState, FileHandle, update_evaluators
     from braintrust.devserver import cors as bt_cors
     from braintrust.devserver.server import create_app
-    from starlette.middleware.cors import CORSMiddleware
     from starlette.requests import Request
     from starlette.responses import HTMLResponse, JSONResponse
     from starlette.routing import Route
@@ -113,23 +195,6 @@ def braintrust_eval_server():
         bt_cors.ALLOWED_HEADERS.append("x-bt-use-gateway")
 
     app = create_app(evaluators, org_name=None)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            "https://www.braintrust.dev",
-            "https://www.braintrustdata.com",
-        ],
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        allow_headers=CORS_ALLOWED_HEADERS,
-        expose_headers=[
-            "x-bt-cursor",
-            "x-bt-found-existing-experiment",
-            "x-bt-span-id",
-            "x-bt-span-export",
-        ],
-        max_age=86400,
-    )
 
     # Configure tracing profile for interactive requests.
     configure_adk_tracing(
@@ -217,7 +282,7 @@ def braintrust_eval_server():
 
     app.router.routes.append(Route("/interactive", interactive_page, methods=["GET"]))
     app.router.routes.append(Route("/interactive/query", interactive_query, methods=["POST"]))
-    return app
+    return _with_playground_cors(app)
 
 
 # Optional: Add a local entrypoint for testing
