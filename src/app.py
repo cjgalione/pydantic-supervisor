@@ -4,6 +4,27 @@ import os
 
 import modal
 
+CORS_ALLOWED_HEADERS = [
+    "Authorization",
+    "Content-Type",
+    "X-Amz-Date",
+    "X-Api-Key",
+    "X-Amz-Security-Token",
+    "x-bt-auth-token",
+    "x-bt-parent",
+    "x-bt-org-name",
+    "x-bt-project-id",
+    "x-bt-stream-fmt",
+    "x-bt-use-cache",
+    "x-bt-use-gateway",
+    "x-stainless-os",
+    "x-stainless-lang",
+    "x-stainless-package-version",
+    "x-stainless-runtime",
+    "x-stainless-runtime-version",
+    "x-stainless-arch",
+]
+
 # Create image with all dependencies
 modal_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -45,7 +66,9 @@ def braintrust_eval_server():
     from pathlib import Path
 
     from braintrust.cli.eval import EvaluatorState, FileHandle, update_evaluators
+    from braintrust.devserver import cors as bt_cors
     from braintrust.devserver.server import create_app
+    from starlette.middleware.cors import CORSMiddleware
 
     import evals
     from src.tracing import configure_adk_tracing
@@ -79,8 +102,31 @@ def braintrust_eval_server():
         project_name=os.environ.get("BRAINTRUST_PROJECT", "pydantic-supervisor"),
     )
 
+    # Braintrust devserver has its own CORS middleware; ensure Playground's
+    # `x-bt-use-gateway` preflight header is recognized there as well.
+    if "x-bt-use-gateway" not in bt_cors.ALLOWED_HEADERS:
+        bt_cors.ALLOWED_HEADERS.append("x-bt-use-gateway")
+
     # Use Braintrust's built-in create_app which handles all the setup.
-    return create_app(evaluators, org_name=None)
+    app = create_app(evaluators, org_name=None)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://www.braintrust.dev",
+            "https://www.braintrustdata.com",
+        ],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_headers=CORS_ALLOWED_HEADERS,
+        expose_headers=[
+            "x-bt-cursor",
+            "x-bt-found-existing-experiment",
+            "x-bt-span-id",
+            "x-bt-span-export",
+        ],
+        max_age=86400,
+    )
+    return app
 
 
 # Optional: Add a local entrypoint for testing
