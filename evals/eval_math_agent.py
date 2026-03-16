@@ -1,5 +1,6 @@
 """Math Agent evaluation focused on calculation accuracy and tool usage."""
 
+import json
 import os
 import re
 import sys
@@ -12,7 +13,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from autoevals import LLMClassifier  # noqa: E402
-from braintrust import Eval  # noqa: E402
+from braintrust import Eval, init_dataset  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
 from evals.parameters import MathAgentPromptParam, extract_prompt_and_model  # noqa: E402
@@ -27,6 +28,9 @@ configure_adk_tracing(
     project_id=os.environ.get("BRAINTRUST_PROJECT_ID"),
     project_name=os.environ.get("BRAINTRUST_PROJECT", "pydantic-supervisor"),
 )
+
+DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
+DEFAULT_BRAINTRUST_DATASET = "Math Trace Dataset"
 
 
 async def run_math_task(input: dict, hooks: Any = None) -> dict:
@@ -82,6 +86,36 @@ MATH_TEST_DATA = [
     {"input": {"query": "What's 15 * 7 + 3?", "expected_answer": 108}},
     {"input": {"query": "Calculate (50 + 30) / 4", "expected_answer": 20}},
 ]
+
+
+def load_local_dataset() -> list[dict[str, Any]]:
+    """Load eval data from the checked-in math trace dataset."""
+    dataset_path = project_root / "datasets" / "math_trace_dataset.jsonl"
+    rows: list[dict[str, Any]] = []
+    with dataset_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+def get_eval_data(project_name: str):
+    """Choose local dataset by default, with optional remote dataset override."""
+    use_remote = os.environ.get("BRAINTRUST_USE_REMOTE_DATASET", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if use_remote:
+        return init_dataset(
+            project=project_name,
+            name=os.environ.get("BRAINTRUST_DATASET", DEFAULT_BRAINTRUST_DATASET),
+            api_key=os.environ.get("BRAINTRUST_API_KEY"),
+            org_name=os.environ.get("BRAINTRUST_ORG_NAME", "Braintrust Demos"),
+        )
+    return load_local_dataset()
 
 
 async def calculation_accuracy_scorer(input, output, expected):
@@ -173,10 +207,12 @@ calculation_correctness_scorer = LLMClassifier(
 )
 
 
+project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
+
 Eval(
-    os.environ.get("BRAINTRUST_PROJECT", "pydantic-supervisor"),
+    project_name,
     experiment_name="math-agent",
-    data=MATH_TEST_DATA,  # type: ignore
+    data=get_eval_data(project_name),
     task=run_math_task,
     scores=[
         calculation_accuracy_scorer,
