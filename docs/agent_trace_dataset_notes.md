@@ -17,7 +17,7 @@ Dataset shape:
 Supervisor curation:
 
 - Favor delegation-heavy examples that clearly require either `ResearchAgent` or `MathAgent`.
-- Keep only a small number of direct-response controls, and make them realistic supervisor use cases rather than creative-writing or joke prompts.
+- Prefer research and math prompts that match the cross-project supervisor traffic pattern in Braintrust: factual lookups, current-information questions, and calculation tasks.
 - Exclude ambiguous prompts where the observed route is weak training signal for the intended agent boundary.
 
 Refresh flow:

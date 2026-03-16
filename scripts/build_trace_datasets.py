@@ -25,8 +25,8 @@ SUPERVISOR_QUERIES = [
     "How does a solar panel work?",
     "Find the average of the numbers 10, 20, and 30.",
     "What is the current global population?",
-    "Write me a simple HTML page.",
-    "I don't understand this math problem! Explain it again, please!",
+    "What is the history of the internet?",
+    "Solve the system of equations: x + y = 5, x - y = 1.",
 ]
 
 RESEARCH_QUERIES = [
