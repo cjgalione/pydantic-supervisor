@@ -1,0 +1,69 @@
+"""Tests for model provider normalization helpers."""
+
+from __future__ import annotations
+
+import os
+import unittest
+from unittest.mock import patch
+
+from pydantic_ai import Agent
+
+from src.modeling import (
+    DEFAULT_GOOGLE_MODEL,
+    GOOGLE_PROVIDER_PREFIX,
+    OPENAI_RESPONSES_PROVIDER_PREFIX,
+    resolve_model_name,
+)
+
+
+class ResolveModelNameTests(unittest.TestCase):
+    def test_default_model_uses_google_provider(self) -> None:
+        resolved = resolve_model_name(None)
+        self.assertEqual(resolved, f"{GOOGLE_PROVIDER_PREFIX}:{DEFAULT_GOOGLE_MODEL}")
+
+    def test_gemini_model_gets_google_prefix(self) -> None:
+        self.assertEqual(
+            resolve_model_name("gemini-2.0-flash-lite"),
+            "google-gla:gemini-2.0-flash-lite",
+        )
+
+    def test_gpt_model_gets_openai_prefix(self) -> None:
+        self.assertEqual(
+            resolve_model_name("gpt-4.1-mini"),
+            "openai:gpt-4.1-mini",
+        )
+
+    def test_gateway_vendor_model_gets_openai_responses_prefix(self) -> None:
+        self.assertEqual(
+            resolve_model_name("moonshotai/Kimi-K2.5"),
+            f"{OPENAI_RESPONSES_PROVIDER_PREFIX}:moonshotai/Kimi-K2.5",
+        )
+
+    def test_existing_provider_prefix_is_preserved(self) -> None:
+        self.assertEqual(
+            resolve_model_name("openai-responses:moonshotai/Kimi-K2.5"),
+            "openai-responses:moonshotai/Kimi-K2.5",
+        )
+
+    def test_test_model_resolution(self) -> None:
+        resolved = resolve_model_name("test")
+        self.assertTrue(resolved == "test" or type(resolved).__name__ == "TestModel")
+
+
+class AgentInstantiationTests(unittest.TestCase):
+    def test_gateway_vendor_model_instantiates_openai_responses_model(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "unit-test-key",
+                "GOOGLE_API_KEY": "",
+                "GEMINI_API_KEY": "",
+            },
+            clear=False,
+        ):
+            agent = Agent(model=resolve_model_name("moonshotai/Kimi-K2.5"))
+            self.assertEqual(type(agent.model).__name__, "OpenAIResponsesModel")
+
+
+if __name__ == "__main__":
+    unittest.main()
