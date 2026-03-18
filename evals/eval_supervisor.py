@@ -13,12 +13,12 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from braintrust import Eval, init_dataset, init_function  # noqa: E402
-from braintrust.oai import wrap_openai  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 from openai import OpenAI  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from evals.braintrust_parameter_patch import apply_parameter_patch  # noqa: E402
+from evals.braintrust_gateway_header_patch import apply_gateway_header_patch  # noqa: E402
 from evals.parameters import (  # noqa: E402
     MathAgentPromptParam,
     PromptModificationParam,
@@ -41,6 +41,7 @@ from src.tracing import configure_adk_tracing  # noqa: E402
 
 load_dotenv()
 apply_parameter_patch()
+apply_gateway_header_patch()
 
 DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
 DEFAULT_BRAINTRUST_DATASET = "Pydantic Supervisor Dataset"
@@ -51,7 +52,35 @@ configure_adk_tracing(
     project_name=os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT),
 )
 
-client = wrap_openai(OpenAI(api_key=os.getenv("OPENAI_API_KEY")))
+judge_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _extract_gateway_headers(headers: Any) -> dict[str, str]:
+    """Extract gateway-specific response headers from raw OpenAI responses."""
+    gateway_metadata: dict[str, str] = {}
+    if headers is None:
+        return gateway_metadata
+
+    used_endpoint = headers.get("x-bt-used-endpoint")
+    cache_status = headers.get("x-bt-cached") or headers.get("x-cached")
+
+    if used_endpoint:
+        gateway_metadata["gateway_used_endpoint"] = str(used_endpoint)
+    if cache_status:
+        gateway_metadata["gateway_cache_status"] = str(cache_status)
+    return gateway_metadata
+
+
+def _parse_with_gateway_metadata(*, model: str, input_data: list[dict[str, Any]], text_format: Any) -> tuple[Any, dict[str, str]]:
+    """Parse a Responses API call while preserving gateway response headers."""
+    raw_response = judge_client.responses.with_raw_response.parse(
+        model=model,
+        input=input_data,
+        text_format=text_format,
+    )
+    gateway_metadata = _extract_gateway_headers(getattr(raw_response, "headers", None))
+    parsed_response = raw_response.parse()
+    return parsed_response, gateway_metadata
 
 
 def unwrap_parameters(params: dict) -> dict:
@@ -379,31 +408,35 @@ async def routing_accuracy_scorer(input, output, expected, metadata, trace):
         input=input,
         agents_called=agents_called_str,
     )
-    response = client.responses.parse(
+    response, gateway_metadata = _parse_with_gateway_metadata(
         model="gpt-4o-mini",
-        input=[{"role": "user", "content": prompt}],
+        input_data=[{"role": "user", "content": prompt}],
         text_format=RoutingAccuracyOutput,
     )
     parsed = response.output_parsed
     if parsed is None:
+        metadata = {
+            "agents_called": agents_called_str,
+            "reasoning": "No output",
+            "choice": "D",
+        }
+        metadata.update(gateway_metadata)
         return {
             "name": "Routing Accuracy",
             "score": 0.0,
-            "metadata": {
-                "agents_called": agents_called_str,
-                "reasoning": "No output",
-                "choice": "D",
-            },
+            "metadata": metadata,
         }
 
+    metadata = {
+        "agents_called": agents_called_str,
+        "reasoning": parsed.reasoning,
+        "choice": parsed.choice,
+    }
+    metadata.update(gateway_metadata)
     return {
         "name": "Routing Accuracy",
         "score": choice_map.get(parsed.choice, 0.0),
-        "metadata": {
-            "agents_called": agents_called_str,
-            "reasoning": parsed.reasoning,
-            "choice": parsed.choice,
-        },
+        "metadata": metadata,
     }
 
 
@@ -530,24 +563,28 @@ async def response_quality_scorer(input, output, expected, metadata, trace):
         assistant_response or str(output),
     )
 
-    response = client.responses.parse(
+    response, gateway_metadata = _parse_with_gateway_metadata(
         model=os.environ.get("EVAL_JUDGE_MODEL", "gpt-4o"),
-        input=[{"role": "user", "content": prompt}],
+        input_data=[{"role": "user", "content": prompt}],
         text_format=ResponseQualityOutput,
     )
     parsed = response.output_parsed
     if parsed is None:
+        metadata = {"choice": "POOR", "reasoning": "No parsed output"}
+        metadata.update(gateway_metadata)
         return {
             "name": "Response Quality",
             "score": 0.0,
-            "metadata": {"choice": "POOR", "reasoning": "No parsed output"},
+            "metadata": metadata,
         }
 
     score_map = {"EXCELLENT": 1.0, "GOOD": 0.75, "FAIR": 0.5, "POOR": 0.0}
+    metadata = {"choice": parsed.choice, "reasoning": parsed.reasoning}
+    metadata.update(gateway_metadata)
     return {
         "name": "Response Quality",
         "score": score_map.get(parsed.choice, 0.0),
-        "metadata": {"choice": parsed.choice, "reasoning": parsed.reasoning},
+        "metadata": metadata,
     }
 
 

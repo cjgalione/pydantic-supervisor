@@ -31,8 +31,12 @@ CORS_ALLOWED_HEADERS = [
 ]
 
 CORS_ALLOWED_ORIGINS: list[str | re.Pattern[str]] = [
+    "https://braintrust.dev",
     "https://www.braintrust.dev",
+    "https://braintrustdata.com",
     "https://www.braintrustdata.com",
+    re.compile(r"https://.*\.braintrust\.dev"),
+    re.compile(r"https://.*\.braintrustdata\.com"),
     re.compile(r"https://.*\.preview\.braintrust\.dev"),
 ]
 
@@ -58,11 +62,21 @@ def _is_allowed_origin(origin: str) -> bool:
 def _with_playground_cors(inner_app: Any) -> Any:
     """Wrap the Braintrust devserver so browser preflights are handled explicitly."""
 
+    def _with_path_alias(scope: dict[str, Any]) -> dict[str, Any]:
+        # Newer playground clients may call /runs; Braintrust devserver still serves /eval.
+        if scope.get("type") == "http" and scope.get("path") == "/runs":
+            updated_scope = dict(scope)
+            updated_scope["path"] = "/eval"
+            updated_scope["raw_path"] = b"/eval"
+            return updated_scope
+        return scope
+
     async def wrapped(
         scope: dict[str, Any],
         receive: Callable[[], Awaitable[dict[str, Any]]],
         send: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
+        scope = _with_path_alias(scope)
         if scope["type"] != "http":
             await inner_app(scope, receive, send)
             return
@@ -106,6 +120,30 @@ def _with_playground_cors(inner_app: Any) -> Any:
         await inner_app(scope, receive, send_with_cors)
 
     return wrapped
+
+
+def _sync_braintrust_cors(bt_cors: Any) -> None:
+    """Keep Braintrust devserver CORS in sync with the wrapper config."""
+
+    def _has_origin(candidate: str | re.Pattern[str]) -> bool:
+        for existing in bt_cors.ALLOWED_ORIGINS:
+            if isinstance(candidate, str) and isinstance(existing, str) and candidate == existing:
+                return True
+            if (
+                isinstance(candidate, re.Pattern)
+                and isinstance(existing, re.Pattern)
+                and candidate.pattern == existing.pattern
+            ):
+                return True
+        return False
+
+    for origin in CORS_ALLOWED_ORIGINS:
+        if not _has_origin(origin):
+            bt_cors.ALLOWED_ORIGINS.append(origin)
+
+    for header in ("x-bt-use-gateway", "x-bt-project-id"):
+        if header not in bt_cors.ALLOWED_HEADERS:
+            bt_cors.ALLOWED_HEADERS.append(header)
 
 # Create image with all dependencies
 modal_image = (
@@ -151,8 +189,10 @@ def braintrust_eval_server():
     # IMPORTANT: Apply the SDK patch BEFORE any Braintrust imports
     # This ensures the patched version is used when evaluators are loaded
     from evals.braintrust_parameter_patch import apply_parameter_patch
+    from evals.braintrust_gateway_header_patch import apply_gateway_header_patch
 
     apply_parameter_patch()
+    apply_gateway_header_patch()
 
     # Now import Braintrust components (they will use the patched version)
     from braintrust.cli.eval import EvaluatorState, FileHandle, update_evaluators
@@ -189,10 +229,8 @@ def braintrust_eval_server():
 
     print(f"Loaded {len(evaluators)} evaluator(s): {[e.eval_name for e in evaluators]}")
 
-    # Braintrust devserver has its own CORS middleware; ensure Playground's
-    # `x-bt-use-gateway` preflight header is recognized there as well.
-    if "x-bt-use-gateway" not in bt_cors.ALLOWED_HEADERS:
-        bt_cors.ALLOWED_HEADERS.append("x-bt-use-gateway")
+    # Keep Braintrust's built-in CORS middleware aligned with this wrapper.
+    _sync_braintrust_cors(bt_cors)
 
     app = create_app(evaluators, org_name=None)
 
