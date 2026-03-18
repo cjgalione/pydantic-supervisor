@@ -7,3 +7,4 @@ __pycache__/
 .worktrees/
 node_modules/
 skills/port-to-google-adk/
+.bt/
