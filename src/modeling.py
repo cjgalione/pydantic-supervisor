@@ -46,8 +46,8 @@ def _infer_provider_prefix(raw_model_name: str) -> str | None:
     return provider_name
 
 
-def _build_braintrust_gateway_responses_model(model_name: str) -> Any | None:
-    """Build an OpenAI Responses model configured to call Braintrust gateway."""
+def _build_braintrust_gateway_vendor_model(model_name: str) -> Any | None:
+    """Build a gateway-backed OpenAI-compatible model for vendor/model ids."""
     gateway_api_key = (os.environ.get("BRAINTRUST_API_KEY") or "").strip()
     if not gateway_api_key:
         return None
@@ -69,7 +69,7 @@ def _build_braintrust_gateway_responses_model(model_name: str) -> Any | None:
 
     try:
         from openai import AsyncOpenAI
-        from pydantic_ai.models.openai import OpenAIResponsesModel
+        from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
         openai_client = AsyncOpenAI(
@@ -77,7 +77,10 @@ def _build_braintrust_gateway_responses_model(model_name: str) -> Any | None:
             base_url=base_url,
             default_headers=default_headers or None,
         )
-        return OpenAIResponsesModel(
+        # Vendor/model IDs on the Braintrust gateway may not support the OpenAI
+        # Responses API payload shape for tool declarations; use chat-completions
+        # compatibility for these routed models.
+        return OpenAIChatModel(
             model_name,
             provider=OpenAIProvider(openai_client=openai_client),
         )
@@ -106,9 +109,10 @@ def resolve_model_name(model_name: str | None) -> Any:
     if ":" in raw:
         provider_name, explicit_model_name = raw.split(":", maxsplit=1)
         if provider_name == OPENAI_RESPONSES_PROVIDER_PREFIX and "/" in explicit_model_name:
-            gateway_model = _build_braintrust_gateway_responses_model(explicit_model_name)
+            gateway_model = _build_braintrust_gateway_vendor_model(explicit_model_name)
             if gateway_model is not None:
                 return gateway_model
+            return f"openai:{explicit_model_name}"
         return raw
 
     inferred_provider = _infer_provider_prefix(raw)
@@ -118,9 +122,9 @@ def resolve_model_name(model_name: str | None) -> Any:
     # Gateway model IDs usually come in vendor/model format and should not be
     # forced through the Google provider.
     if "/" in raw:
-        gateway_model = _build_braintrust_gateway_responses_model(raw)
+        gateway_model = _build_braintrust_gateway_vendor_model(raw)
         if gateway_model is not None:
             return gateway_model
-        return f"{OPENAI_RESPONSES_PROVIDER_PREFIX}:{raw}"
+        return f"openai:{raw}"
 
     return f"{GOOGLE_PROVIDER_PREFIX}:{raw}"

@@ -204,6 +204,7 @@ def braintrust_eval_server():
 
     import evals
     from src.agents.deep_agent import get_supervisor, run_supervisor_with_critic
+    from src.config import AgentConfig
     from src.tracing import configure_adk_tracing
 
     # Find all eval files in the evals directory
@@ -303,9 +304,25 @@ def braintrust_eval_server():
             return JSONResponse({"error": "Missing non-empty `query`"}, status_code=400)
 
         workflow_name = str(payload.get("workflow_name", "pydantic-supervisor-interactive")).strip()
+        supervisor_model = str(payload.get("supervisor_model", "")).strip()
+        research_model = str(payload.get("research_model", "")).strip()
+        math_model = str(payload.get("math_model", "")).strip()
+
+        selected_supervisor = supervisor
+        if supervisor_model or research_model or math_model:
+            config = AgentConfig(
+                supervisor_model=supervisor_model or AgentConfig.model_fields["supervisor_model"].default,
+                research_model=research_model
+                or supervisor_model
+                or AgentConfig.model_fields["research_model"].default,
+                math_model=math_model
+                or supervisor_model
+                or AgentConfig.model_fields["math_model"].default,
+            )
+            selected_supervisor = get_supervisor(config=config, force_rebuild=True)
 
         run_result = await run_supervisor_with_critic(
-            supervisor=supervisor,
+            supervisor=selected_supervisor,
             query=query,
             app_name=workflow_name or "pydantic-supervisor-interactive",
         )
@@ -313,6 +330,15 @@ def braintrust_eval_server():
             {
                 "query": query,
                 "workflow_name": workflow_name,
+                "resolved_models": {
+                    "supervisor_model": supervisor_model or AgentConfig.model_fields["supervisor_model"].default,
+                    "research_model": research_model
+                    or supervisor_model
+                    or AgentConfig.model_fields["research_model"].default,
+                    "math_model": math_model
+                    or supervisor_model
+                    or AgentConfig.model_fields["math_model"].default,
+                },
                 "final_output": run_result.get("final_output", ""),
                 "messages": run_result.get("messages", []),
             }

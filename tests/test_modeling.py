@@ -12,7 +12,6 @@ from src.modeling import (
     DEFAULT_BRAINTRUST_GATEWAY_BASE_URL,
     DEFAULT_GOOGLE_MODEL,
     GOOGLE_PROVIDER_PREFIX,
-    OPENAI_RESPONSES_PROVIDER_PREFIX,
     resolve_model_name,
 )
 
@@ -38,17 +37,17 @@ class ResolveModelNameTests(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
-    def test_gateway_vendor_model_gets_openai_responses_prefix_without_gateway_key(self) -> None:
+    def test_gateway_vendor_model_gets_openai_chat_prefix_without_gateway_key(self) -> None:
         self.assertEqual(
             resolve_model_name("moonshotai/Kimi-K2.5"),
-            f"{OPENAI_RESPONSES_PROVIDER_PREFIX}:moonshotai/Kimi-K2.5",
+            "openai:moonshotai/Kimi-K2.5",
         )
 
     @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
-    def test_existing_provider_prefix_is_preserved_without_gateway_key(self) -> None:
+    def test_openai_responses_vendor_model_downgrades_to_openai_chat_without_gateway_key(self) -> None:
         self.assertEqual(
             resolve_model_name("openai-responses:moonshotai/Kimi-K2.5"),
-            "openai-responses:moonshotai/Kimi-K2.5",
+            "openai:moonshotai/Kimi-K2.5",
         )
 
     @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
@@ -70,7 +69,7 @@ class AgentInstantiationTests(unittest.TestCase):
             clear=False,
         ):
             agent = Agent(model=resolve_model_name("moonshotai/Kimi-K2.5"))
-            self.assertEqual(type(agent.model).__name__, "OpenAIResponsesModel")
+            self.assertEqual(type(agent.model).__name__, "OpenAIChatModel")
 
     def test_gateway_vendor_model_uses_braintrust_gateway_when_key_present(self) -> None:
         with patch.dict(
@@ -84,7 +83,7 @@ class AgentInstantiationTests(unittest.TestCase):
             clear=False,
         ):
             resolved = resolve_model_name("moonshotai/Kimi-K2.5")
-            self.assertEqual(type(resolved).__name__, "OpenAIResponsesModel")
+            self.assertEqual(type(resolved).__name__, "OpenAIChatModel")
             self.assertEqual(str(resolved.client.base_url), DEFAULT_BRAINTRUST_GATEWAY_BASE_URL)
             self.assertEqual(resolved.client.api_key, "bt-test-key")
             self.assertEqual(resolved.client.default_headers.get("x-bt-project-id"), "proj-test-id")
