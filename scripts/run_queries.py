@@ -170,6 +170,7 @@ async def run_question(
     question: str,
     *,
     model_pool: list[str],
+    per_question_timeout_seconds: float,
     max_retries: int,
     base_retry_seconds: float,
 ) -> tuple[str, bool, bool]:
@@ -188,13 +189,19 @@ async def run_question(
     while True:
         attempt += 1
         try:
-            result = await run_supervisor_with_critic(
-                supervisor=supervisor,
-                query=question,
-                app_name="pydantic-supervisor-batch",
+            result = await asyncio.wait_for(
+                run_supervisor_with_critic(
+                    supervisor=supervisor,
+                    query=question,
+                    app_name="pydantic-supervisor-batch",
+                ),
+                timeout=per_question_timeout_seconds,
             )
             print(f"✅ {question[:80]} -> {str(result.get('final_output', ''))[:80]}")
             return question, True, False
+        except TimeoutError:
+            print(f"❌ {question[:80]} -> timed out after {per_question_timeout_seconds:.1f}s")
+            return question, False, False
         except Exception as exc:
             if not _is_resource_exhausted_error(exc):
                 print(f"❌ {question[:80]} -> {exc}")
@@ -224,12 +231,18 @@ async def main_async(args: argparse.Namespace) -> None:
             return
 
     num_questions = args.num_questions if args.num_questions is not None else random.randint(1, 100)
-    questions = generate_questions(num_questions=num_questions, seed=args.seed)
+    rng = random.Random(args.seed)
+    if args.question_source == "bank":
+        questions = _fallback_questions(num_questions=num_questions, rng=rng)
+    else:
+        questions = generate_questions(num_questions=num_questions, seed=args.seed)
 
     print(f"Generated {len(questions)} questions")
     print(f"Running with concurrency={args.concurrency}")
     model_pool = _parse_model_pool(args.model_pool)
     print(f"Model pool: {', '.join(model_pool)}")
+    print(f"Question source: {args.question_source}")
+    print(f"Per-question timeout: {args.per_question_timeout_seconds:.1f}s")
     print("=" * 80)
 
     successes = 0
@@ -245,6 +258,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 run_question(
                     q,
                     model_pool=model_pool,
+                    per_question_timeout_seconds=args.per_question_timeout_seconds,
                     max_retries=args.max_retries,
                     base_retry_seconds=args.base_retry_seconds,
                 )
@@ -328,6 +342,18 @@ def main() -> None:
         "--model-pool",
         default=os.environ.get("MODEL_POOL", ",".join(DEFAULT_MODEL_POOL)),
         help="Comma-separated model IDs to sample from (default: gemini-2.0-flash-lite)",
+    )
+    parser.add_argument(
+        "--question-source",
+        choices=("generated", "bank"),
+        default=os.environ.get("QUESTION_SOURCE", "generated"),
+        help="Question source: generated (Gemini) or bank (deterministic local set)",
+    )
+    parser.add_argument(
+        "--per-question-timeout-seconds",
+        type=float,
+        default=float(os.environ.get("PER_QUESTION_TIMEOUT_SECONDS", "120")),
+        help="Fail a question if supervisor execution exceeds this timeout (default: 120s)",
     )
     args = parser.parse_args()
 

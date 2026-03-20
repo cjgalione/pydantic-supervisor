@@ -12,6 +12,14 @@ on:
         description: "Comma-separated model IDs for batch routing (e.g. moonshotai/Kimi-K2.5)"
         required: false
         default: "moonshotai/Kimi-K2.5"
+      question_source:
+        description: "Question source: generated or bank"
+        required: false
+        default: "bank"
+      per_question_timeout_seconds:
+        description: "Timeout per question in seconds"
+        required: false
+        default: "120"
 
 jobs:
   run-queries:
@@ -45,5 +53,7 @@ jobs:
           INTER_QUESTION_DELAY_SECONDS: 2
           TRACE_PROFILE: lean
           MODEL_POOL: ${{ github.event.inputs.model_pool || 'gemini-2.0-flash-lite' }}
+          QUESTION_SOURCE: ${{ github.event.inputs.question_source || 'generated' }}
+          PER_QUESTION_TIMEOUT_SECONDS: ${{ github.event.inputs.per_question_timeout_seconds || '120' }}
         run: |
           uv run python scripts/run_queries.py --num-questions "$NUM_QUESTIONS"

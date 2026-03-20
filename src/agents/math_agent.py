@@ -1,5 +1,6 @@
 """Math agent with arithmetic capabilities."""
 
+import re
 from typing import Any, Callable
 
 from pydantic_ai import Agent
@@ -23,11 +24,36 @@ _UNIT_ALIASES = {
     "hp-hr": "horsepower * hour",
     "hp*h": "horsepower * hour",
 }
+_LIGHTBULB_HOURS_PATTERN = re.compile(
+    r"(?P<watts>\d+(?:\.\d+)?)\s*w(?:att)?\s*lightbulb[-\s]*hours?",
+    flags=re.IGNORECASE,
+)
 
 
 def _normalize_unit(unit: str) -> str:
     lowered = unit.strip().lower()
     return _UNIT_ALIASES.get(lowered, lowered)
+
+
+def _trim_unit_expression(unit: str) -> str:
+    # LLM tool arguments occasionally include explanatory text after punctuation.
+    cleaned = unit.strip().strip("'\"")
+    return re.split(r"[.\n]", cleaned, maxsplit=1)[0].strip()
+
+
+def _convert_to_lightbulb_hours(value: float, from_unit: str, to_unit: str) -> float | None:
+    match = _LIGHTBULB_HOURS_PATTERN.search(to_unit)
+    if not match:
+        return None
+
+    watts = float(match.group("watts"))
+    if watts <= 0:
+        return None
+
+    source_quantity = float(value) * _UREG.parse_units(_normalize_unit(from_unit))
+    joules = source_quantity.to(_UREG.joule).magnitude
+    joules_per_lightbulb_hour = watts * 3600.0
+    return float(joules / joules_per_lightbulb_hour)
 
 
 def add(a: float, b: float) -> float:
@@ -54,10 +80,17 @@ def divide(a: float, b: float) -> float:
 
 def convert_units(value: float, from_unit: str, to_unit: str) -> float:
     """Convert numeric values between compatible units."""
-    source = _normalize_unit(from_unit)
-    target = _normalize_unit(to_unit)
-    quantity = float(value) * _UREG.parse_units(source)
-    converted = quantity.to(_UREG.parse_units(target))
+    source = _trim_unit_expression(from_unit)
+    target = _trim_unit_expression(to_unit)
+
+    lightbulb_hours = _convert_to_lightbulb_hours(value=value, from_unit=source, to_unit=target)
+    if lightbulb_hours is not None:
+        return lightbulb_hours
+
+    normalized_source = _normalize_unit(source)
+    normalized_target = _normalize_unit(target)
+    quantity = float(value) * _UREG.parse_units(normalized_source)
+    converted = quantity.to(_UREG.parse_units(normalized_target))
     return float(converted.magnitude)
 
 
