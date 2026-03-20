@@ -48,10 +48,12 @@ jobs:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           # Route Anthropic and OpenAI SDK calls through the Braintrust gateway
           # so all LLM traffic is logged and visible in traces, regardless of
-          # which provider PydanticAI resolves a model to.
+          # which provider PydanticAI resolves a model to. The API keys must be
+          # the Braintrust key because the gateway authenticates with it.
           ANTHROPIC_BASE_URL: "https://gateway.braintrust.dev/v1/proxy/anthropic"
           ANTHROPIC_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           OPENAI_BASE_URL: "https://gateway.braintrust.dev/v1/proxy"
+          OPENAI_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           NUM_QUESTIONS: ${{ github.event.inputs.num_questions || '100' }}
           CONCURRENCY: 1
           MAX_RETRIES: 3
