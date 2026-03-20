@@ -49,9 +49,9 @@ jobs:
           # Route Anthropic and OpenAI SDK calls through the Braintrust gateway
           # so all LLM traffic is logged and visible in traces, regardless of
           # which provider PydanticAI resolves a model to.
-          ANTHROPIC_BASE_URL: "https://api.braintrust.dev/v1/proxy/anthropic"
+          ANTHROPIC_BASE_URL: "https://gateway.braintrust.dev/v1/proxy/anthropic"
           ANTHROPIC_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
-          OPENAI_BASE_URL: "https://api.braintrust.dev/v1/proxy"
+          OPENAI_BASE_URL: "https://gateway.braintrust.dev/v1/proxy"
           NUM_QUESTIONS: ${{ github.event.inputs.num_questions || '100' }}
           CONCURRENCY: 1
           MAX_RETRIES: 3
