@@ -51,7 +51,7 @@ jobs:
           MAX_RETRIES: 3
           BASE_RETRY_SECONDS: 15
           INTER_QUESTION_DELAY_SECONDS: 2
-          TRACE_PROFILE: lean
+          TRACE_PROFILE: full
           MODEL_POOL: ${{ github.event.inputs.model_pool || 'gemini-2.0-flash-lite' }}
           QUESTION_SOURCE: ${{ github.event.inputs.question_source || 'generated' }}
           PER_QUESTION_TIMEOUT_SECONDS: ${{ github.event.inputs.per_question_timeout_seconds || '120' }}
