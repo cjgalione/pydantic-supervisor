@@ -52,7 +52,10 @@ configure_adk_tracing(
     project_name=os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT),
 )
 
-judge_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+judge_client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    default_headers={"x-bt-use-cache": "always"},
+)
 
 
 def _extract_gateway_headers(headers: Any) -> dict[str, str]:
@@ -207,6 +210,21 @@ def _query_requires_research_handoff(query: str) -> bool:
     return bool(re.search(r"\b(who|what|when|where)\b", q)) and (not _query_requires_math_handoff(query))
 
 
+def _is_error_output(output: Any) -> bool:
+    """Return True when the task produced no usable output (e.g. an auth error)."""
+    if output is None:
+        return True
+    if isinstance(output, dict):
+        if output.get("error"):
+            return True
+        final = output.get("final_output")
+        if final is None or (isinstance(final, str) and not final.strip()):
+            messages = output.get("messages", [])
+            if not isinstance(messages, list) or not messages:
+                return True
+    return False
+
+
 def _output_messages(output: Any) -> list[dict[str, Any]]:
     if not isinstance(output, dict):
         return []
@@ -237,6 +255,9 @@ def _has_message_marker(messages: list[dict[str, Any]], markers: tuple[str, ...]
 async def delegation_compliance_scorer(input, output, expected, metadata, trace):
     """Deterministic policy compliance check for required delegation markers."""
     del expected, metadata, trace
+
+    if _is_error_output(output):
+        return {"name": "Delegation Compliance", "score": None}
 
     if isinstance(input, dict):
         try:
@@ -395,6 +416,9 @@ async def _collect_agents_called(trace: Any, output: Any) -> list[str]:
 
 
 async def routing_accuracy_scorer(input, output, expected, metadata, trace):
+    if _is_error_output(output):
+        return {"name": "Routing Accuracy", "score": None}
+
     choice_map = {"A": 1.0, "B": 0.7, "C": 0.3, "D": 0.0}
     agents_called = await _collect_agents_called(trace, output)
 
@@ -512,6 +536,9 @@ async def no_unnecessary_clarification_scorer(input, output, expected, metadata,
     """Penalize asking for clarification when the math prompt is already self-contained."""
     del expected, metadata, trace
 
+    if _is_error_output(output):
+        return {"name": "No Unnecessary Clarification", "score": None}
+
     if isinstance(input, dict):
         try:
             query = extract_query_from_input(input)
@@ -547,6 +574,9 @@ class ResponseQualityOutput(BaseModel):
 async def response_quality_scorer(input, output, expected, metadata, trace):
     """Score response quality with structured output parsing."""
     del expected, metadata, trace
+
+    if _is_error_output(output):
+        return {"name": "Response Quality", "score": None}
 
     assistant_response = _latest_assistant_text(output)
 
