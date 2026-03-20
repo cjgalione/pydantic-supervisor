@@ -220,8 +220,11 @@ async def run_pydantic_agent(
             input={"new_message": {"role": "user", "parts": [{"text": query}]}},
             metadata={"user_id": uid, "session_id": sid, "app_name": app_name},
         ) as invocation_span:
+            model_obj = getattr(agent, "_model", None) or getattr(agent, "model", None)
+            model_name = getattr(model_obj, "model_name", None) or ""
+            span_name = f"chat {model_name}" if model_name else "llm_response_generation"
             with start_span(
-                name="llm_response_generation",
+                name=span_name,
                 type=SpanTypeAttribute.LLM,
                 input={"query": query, "agent_name": str(getattr(agent, "name", "") or "")},
             ) as llm_span:
