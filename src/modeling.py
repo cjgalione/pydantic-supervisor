@@ -59,7 +59,9 @@ def _build_braintrust_gateway_vendor_model(model_name: str) -> Any | None:
     if not base_url:
         return None
 
-    default_headers: dict[str, str] = {}
+    default_headers: dict[str, str] = {
+        "x-bt-use-cache": "always",
+    }
     project_id = (os.environ.get("BRAINTRUST_PROJECT_ID") or "").strip()
     org_name = (os.environ.get("BRAINTRUST_ORG_NAME") or "").strip()
     if project_id:
@@ -117,6 +119,13 @@ def resolve_model_name(model_name: str | None) -> Any:
 
     inferred_provider = _infer_provider_prefix(raw)
     if inferred_provider:
+        # Route non-Google models through the Braintrust gateway when available,
+        # so all LLM traffic is logged in traces. Google models use their native
+        # provider since the gateway doesn't support the Google API format.
+        if inferred_provider != GOOGLE_PROVIDER_PREFIX:
+            gateway_model = _build_braintrust_gateway_vendor_model(raw)
+            if gateway_model is not None:
+                return gateway_model
         return f"{inferred_provider}:{raw}"
 
     # Gateway model IDs usually come in vendor/model format and should not be
