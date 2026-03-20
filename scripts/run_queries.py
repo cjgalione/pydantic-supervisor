@@ -29,7 +29,7 @@ from src.tracing import configure_adk_tracing
 load_dotenv()
 ensure_google_api_keys()
 
-MODEL_POOL = ["gemini-2.0-flash-lite"]
+DEFAULT_MODEL_POOL = ["gemini-2.0-flash-lite"]
 QUESTION_GENERATOR_MODEL = "gemini-2.0-flash-lite"
 
 QUESTION_BANK = [
@@ -103,6 +103,17 @@ def _retry_delay_seconds(exc: Exception) -> float | None:
     return None
 
 
+def _parse_model_pool(raw_model_pool: str | None) -> list[str]:
+    if not raw_model_pool:
+        return DEFAULT_MODEL_POOL.copy()
+
+    models = [candidate.strip() for candidate in raw_model_pool.split(",")]
+    models = [model for model in models if model]
+    if not models:
+        return DEFAULT_MODEL_POOL.copy()
+    return models
+
+
 def generate_questions(num_questions: int, seed: Optional[int] = None) -> list[str]:
     """Generate realistic, varied questions with Gemini."""
     rng = random.Random(seed)
@@ -158,13 +169,14 @@ def _quota_preflight_ok() -> tuple[bool, str]:
 async def run_question(
     question: str,
     *,
+    model_pool: list[str],
     max_retries: int,
     base_retry_seconds: float,
 ) -> tuple[str, bool, bool]:
     """Run one question through the supervisor with a random model assignment."""
     from src.agent_graph import get_supervisor
 
-    selected_model = random.choice(MODEL_POOL)
+    selected_model = random.choice(model_pool)
     config = AgentConfig(
         supervisor_model=selected_model,
         research_model=selected_model,
@@ -216,7 +228,8 @@ async def main_async(args: argparse.Namespace) -> None:
 
     print(f"Generated {len(questions)} questions")
     print(f"Running with concurrency={args.concurrency}")
-    print(f"Model pool: {', '.join(MODEL_POOL)}")
+    model_pool = _parse_model_pool(args.model_pool)
+    print(f"Model pool: {', '.join(model_pool)}")
     print("=" * 80)
 
     successes = 0
@@ -231,6 +244,7 @@ async def main_async(args: argparse.Namespace) -> None:
             *(
                 run_question(
                     q,
+                    model_pool=model_pool,
                     max_retries=args.max_retries,
                     base_retry_seconds=args.base_retry_seconds,
                 )
@@ -309,6 +323,11 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=os.environ.get("QUOTA_PREFLIGHT", "1") != "0",
         help="Run a lightweight Gemini call before batch and skip run if daily quota is exhausted",
+    )
+    parser.add_argument(
+        "--model-pool",
+        default=os.environ.get("MODEL_POOL", ",".join(DEFAULT_MODEL_POOL)),
+        help="Comma-separated model IDs to sample from (default: gemini-2.0-flash-lite)",
     )
     args = parser.parse_args()
 

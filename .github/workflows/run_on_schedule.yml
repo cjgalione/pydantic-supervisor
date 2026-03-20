@@ -8,6 +8,10 @@ on:
         description: "Number of questions to generate for this manual run"
         required: false
         default: "100"
+      model_pool:
+        description: "Comma-separated model IDs for batch routing (e.g. moonshotai/Kimi-K2.5)"
+        required: false
+        default: "moonshotai/Kimi-K2.5"
 
 jobs:
   run-queries:
@@ -40,5 +44,6 @@ jobs:
           BASE_RETRY_SECONDS: 15
           INTER_QUESTION_DELAY_SECONDS: 2
           TRACE_PROFILE: lean
+          MODEL_POOL: ${{ github.event.inputs.model_pool || 'gemini-2.0-flash-lite' }}
         run: |
           uv run python scripts/run_queries.py --num-questions "$NUM_QUESTIONS"
