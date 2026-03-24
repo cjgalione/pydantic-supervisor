@@ -220,3 +220,181 @@ project.scorers.create(
     parameters=NoUnnecessaryClarificationParams,
     handler=no_unnecessary_clarification_scorer,
 )
+
+
+# ---------------------------------------------------------------------------
+# Golden eval scorers (ground-truth accuracy + trajectory fidelity)
+# ---------------------------------------------------------------------------
+
+
+class AnswerAccuracyParams(BaseModel):
+    output: Any
+    expected: Any
+
+
+class TrajectoryFidelityParams(BaseModel):
+    output: Any
+    expected: Any
+
+
+def _extract_numbers_from_text(text: str) -> list[float]:
+    sci_caret = re.findall(r"(-?\d+(?:\.\d+)?)\s*[x×]\s*10\^(-?\d+)", text, flags=re.IGNORECASE)
+    numbers: list[float] = []
+    for base_s, exp_s in sci_caret:
+        try:
+            numbers.append(float(base_s) * (10 ** int(exp_s)))
+        except ValueError:
+            pass
+    raw_numbers = re.findall(r"-?\d+(?:[,_]\d+)*(?:\.\d+)?(?:[eE][+-]?\d+)?", text)
+    for n in raw_numbers:
+        try:
+            numbers.append(float(n.replace(",", "").replace("_", "")))
+        except ValueError:
+            pass
+    return numbers
+
+
+def _get_response_text(output_payload: Any) -> str:
+    if isinstance(output_payload, str):
+        return output_payload
+    if not isinstance(output_payload, dict):
+        return str(output_payload)
+    final = output_payload.get("final_output", "")
+    if isinstance(final, str) and final.strip():
+        return final.strip()
+    messages = output_payload.get("messages", [])
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                return str(msg["content"])
+    return ""
+
+
+def _infer_agents_from_output(output_payload: Any) -> set[str]:
+    found: set[str] = set()
+    if not isinstance(output_payload, dict):
+        return found
+    messages = output_payload.get("messages", [])
+    if not isinstance(messages, list):
+        return found
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = str(msg.get("content", "") or "").lower()
+        if "handoff [researchagent]" in content or "request_research_subtask" in content:
+            found.add("ResearchAgent")
+        if "handoff [mathagent]" in content or "request_math_subtask" in content:
+            found.add("MathAgent")
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            name = str(tc.get("name", "") or "").lower()
+            if any(k in name for k in ("research", "tavily", "delegate_to_research")):
+                found.add("ResearchAgent")
+            if any(k in name for k in ("math", "add", "subtract", "multiply", "divide", "delegate_to_math")):
+                found.add("MathAgent")
+    return found
+
+
+async def answer_accuracy_scorer(output: Any, expected: Any) -> dict[str, Any]:
+    """Deterministic ground-truth accuracy check.
+
+    answer_type options:
+      contains_numeric – response contains a number within tolerance of expected.answer
+      contains         – response contains expected.answer as a substring (case-insensitive)
+      contains_all     – response contains every string in expected.answer_all
+    """
+    if not isinstance(expected, dict):
+        return {"name": "Answer Accuracy", "score": None}
+
+    answer_type = expected.get("answer_type", "contains")
+    response_text = _get_response_text(output)
+
+    if answer_type == "contains_numeric":
+        raw_expected = expected.get("answer")
+        if raw_expected is None:
+            return {"name": "Answer Accuracy", "score": None}
+        try:
+            expected_value = float(str(raw_expected).replace(",", ""))
+        except ValueError:
+            return {"name": "Answer Accuracy", "score": None}
+        tolerance = float(expected.get("tolerance") or 0.01)
+        for num in _extract_numbers_from_text(response_text):
+            if expected_value == 0:
+                if abs(num - expected_value) < 1e-9:
+                    return {"name": "Answer Accuracy", "score": 1.0}
+            else:
+                if abs(num - expected_value) / abs(expected_value) <= tolerance:
+                    return {"name": "Answer Accuracy", "score": 1.0}
+        return {"name": "Answer Accuracy", "score": 0.0}
+
+    if answer_type == "contains":
+        expected_str = str(expected.get("answer", "")).strip()
+        found = expected_str.lower() in response_text.lower()
+        return {"name": "Answer Accuracy", "score": 1.0 if found else 0.0}
+
+    if answer_type == "contains_all":
+        required = expected.get("answer_all", [])
+        if not isinstance(required, list) or not required:
+            return {"name": "Answer Accuracy", "score": None}
+        hits = sum(1 for item in required if str(item).lower() in response_text.lower())
+        return {"name": "Answer Accuracy", "score": hits / len(required)}
+
+    return {"name": "Answer Accuracy", "score": None}
+
+
+async def trajectory_fidelity_scorer(output: Any, expected: Any) -> dict[str, Any]:
+    """Verify the system called the agents required by the golden test case.
+
+    1.0 → all expected agents were called
+    0–1 → partial: some expected agents were called (fraction)
+    0.0 → none of the expected agents were called
+    1.0 → always, when expected_agents is empty (direct answer permitted)
+    """
+    if not isinstance(expected, dict):
+        return {"name": "Trajectory Fidelity", "score": None}
+
+    expected_agents: list[str] = expected.get("expected_agents") or []
+    if not expected_agents:
+        return {"name": "Trajectory Fidelity", "score": 1.0}
+
+    agents_called = _infer_agents_from_output(output)
+    expected_set = set(expected_agents)
+    hit = expected_set & agents_called
+    missed = expected_set - agents_called
+
+    if not missed:
+        score = 1.0
+    elif not hit:
+        score = 0.0
+    else:
+        score = len(hit) / len(expected_set)
+    return {"name": "Trajectory Fidelity", "score": score}
+
+
+project.scorers.create(
+    name="Answer Accuracy",
+    slug="answer-accuracy",
+    description=(
+        "Deterministic ground-truth accuracy check for golden eval cases. "
+        "Supports contains_numeric (within tolerance), contains (substring), "
+        "and contains_all (all required substrings present) matching strategies."
+    ),
+    parameters=AnswerAccuracyParams,
+    handler=answer_accuracy_scorer,
+)
+
+project.scorers.create(
+    name="Trajectory Fidelity",
+    slug="trajectory-fidelity",
+    description=(
+        "Verifies that the multi-agent system called the expected specialist agents "
+        "(MathAgent, ResearchAgent) for each golden test case. "
+        "Catches routing regressions caused by prompt drift or model upgrades."
+    ),
+    parameters=TrajectoryFidelityParams,
+    handler=trajectory_fidelity_scorer,
+)

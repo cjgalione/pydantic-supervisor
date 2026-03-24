@@ -68,6 +68,50 @@ Runtime notes:
 
 ## Evals
 
+This repo includes three complementary eval suites that together cover the full
+eval trinity for multi-agent systems:
+
+| Dimension | Eval file | What it measures |
+|-----------|-----------|-----------------|
+| **Behavioural** | `eval_supervisor.py` | Routing accuracy, delegation compliance, step efficiency |
+| **Quality** | `eval_supervisor.py` | Response quality (LLM-as-judge), no unnecessary clarification |
+| **Accuracy** | `eval_golden.py` | Ground-truth correctness against expected answers |
+
+### Golden eval (ground-truth accuracy)
+
+The golden eval is the highest-signal eval for production reliability.  It runs
+the full supervisor + critic pipeline against 25 hand-curated test cases, each
+carrying a known-correct expected answer and an expected agent trajectory:
+
+```bash
+braintrust eval evals/eval_golden.py
+```
+
+Three new scorers measure dimensions the other evals cannot:
+
+- **Answer Accuracy** – deterministic match against `expected.answer`.  Supports
+  `contains_numeric` (within configurable tolerance), `contains` (substring),
+  and `contains_all` (all required values present).  Catches regressions without
+  an LLM call.
+- **Trajectory Fidelity** – verifies the system called the right agents
+  (`MathAgent`, `ResearchAgent`) for each test case.  Detects prompt-drift or
+  model-upgrade regressions where the model starts short-cutting compound
+  queries by answering directly.
+- **Answer Grounding** – LLM judge *anchored* to the known-correct answer.
+  Unlike a free-form judge, this scorer does not need to independently know the
+  right answer — it only checks whether the AI's response matches the provided
+  ground truth, producing a well-calibrated signal even for obscure facts.
+
+Dataset layout (`datasets/golden_dataset.jsonl`) covers three categories:
+
+| Category | Count | Example |
+|----------|-------|---------|
+| Pure math | 10 | `"What is 2 to the power of 8?" → 256` |
+| Stable factual research | 5 | `"Who painted the Sistine Chapel ceiling?" → Michelangelo` |
+| Compound (research + math) | 10 | `"What year was the iPhone first released? Subtract from 2030." → 23` |
+
+### Behavioural + quality evals
+
 Run full supervisor eval:
 
 ```bash
