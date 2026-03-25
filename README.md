@@ -171,6 +171,38 @@ Response includes:
 - `src/eval_server.py` - Modal ASGI remote eval server
 - `scorers.py` - reusable published scorers
 
+## Tempo Stress Demo (OSS Grafana Tempo)
+
+This repository includes a reproducible stress harness to test how OSS Tempo handles agent-style traces.
+
+1. Start and run all stages:
+```bash
+scripts/run_tempo_stress.sh
+```
+
+2. Key outputs:
+- `artifacts/tempo_stress_results.csv` (aggregated metrics table)
+- `docs/tempo_stress_report.md` (stage summary + breakpoint)
+- `docs/tempo_talk_track.md` (customer-facing technical framing)
+
+3. Config knobs:
+- `TRACE_BACKEND=braintrust|otlp`
+- `OTEL_EXPORTER_OTLP_ENDPOINT`
+- `OTEL_EXPORTER_OTLP_PROTOCOL`
+- `TRACE_PAYLOAD_PROFILE=baseline|large|xlarge`
+- `TRACE_RUN_TAG=<id>`
+- `TEMPO_SYNTHETIC_ONLY=1` (default for core breakpoint ramp)
+- `TEMPO_INCLUDE_OVERLOAD=1` (adds overload stage: 180 questions / concurrency 16 / xlarge)
+- `TEMPO_RUN_LIVE_SANITY=1` (runs a short live sanity slice after synthetic ramp)
+- `TEMPO_STAGE_REPEATS=3` (stage-level repeats; instability is evaluated across repeats)
+- `TEMPO_TRACE_TARGET_BYTES=<int>` (force emitted trace payload target size in bytes, e.g. `1073741824` for ~1GB)
+- `TEMPO_TRACE_SIZE_RAMP_BYTES=a,b,c` (optional per-run ramp, e.g. `1048576,16777216,134217728,536870912,1073741824`)
+- `TEMPO_TRACE_SPAN_TARGET_BYTES=<int>` (target payload bytes per synthetic span; default `8192` for production-like moderate span size)
+- `TEMPO_TRACE_SPAN_PAUSE_MS=<int>` and `TEMPO_TRACE_SPAN_PAUSE_EVERY=<int>` (optional micro-pauses every N spans to emulate bursty trace growth)
+- `TEMPO_SEARCH_PROBE_REQUESTS=<int>` and `TEMPO_SEARCH_PROBE_DELAY_MS=<int>` (repeat search requests post-stage to measure cross-trace search reliability)
+- `TEMPO_OTEL_BSP_MAX_EXPORT_BATCH_SIZE=<int>` (application-side OTEL export batch size; lower values reduce per-request body size)
+- `TEMPO_OTEL_BSP_MAX_QUEUE_SIZE=<int>`, `TEMPO_OTEL_BSP_SCHEDULE_DELAY=<ms>`, `TEMPO_OTEL_BSP_EXPORT_TIMEOUT=<ms>` (OTEL BSP tuning)
+
 ## Notes
 
 - Output contract: `{"final_output": str, "messages": [...]}` for scorer compatibility and UI.
