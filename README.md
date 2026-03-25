@@ -106,9 +106,9 @@ Dataset layout (`datasets/golden_dataset.jsonl`) covers three categories:
 
 | Category | Count | Example |
 |----------|-------|---------|
-| Pure math | 10 | `"What is 2 to the power of 8?" → 256` |
+| Pure math (incl. common-knowledge compound) | 15 | `"What is 2 to the power of 8?" → 256` |
 | Stable factual research | 5 | `"Who painted the Sistine Chapel ceiling?" → Michelangelo` |
-| Compound (research + math) | 10 | `"What year was the iPhone first released? Subtract from 2030." → 23` |
+| Compound (research + math) | 5 | `"What year was the iPhone first released? Subtract from 2030." → 23` |
 
 ### Behavioural + quality evals
 

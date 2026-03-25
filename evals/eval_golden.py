@@ -190,8 +190,6 @@ def _infer_agents_from_messages(output: Any) -> set[str]:
 # ---------------------------------------------------------------------------
 
 def _unwrap_parameters(params: dict) -> dict:
-    import inspect
-
     system_prompt, supervisor_model = extract_prompt_and_model(
         params.get("system_prompt"),
         default_prompt=DEFAULT_SYSTEM_PROMPT,
