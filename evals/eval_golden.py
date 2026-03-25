@@ -14,16 +14,15 @@ measure the dimensions that matter most for production reliability:
 
 Together these complement the behavioural scorers in eval_supervisor.py and
 complete the eval trinity:
-  ✅ Behavioural  (routing, delegation compliance, efficiency)
-  ✅ Quality      (response quality LLM judge)
-  ✅ Accuracy     (ground-truth matching) ← this file
+  Behavioural  (routing, delegation compliance, efficiency)
+  Quality      (response quality LLM judge)
+  Accuracy     (ground-truth matching) <- this file
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any, Literal
@@ -34,7 +33,6 @@ if str(project_root) not in sys.path:
 
 from braintrust import Eval, init_dataset, init_function  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
-from openai import OpenAI  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from evals.braintrust_gateway_header_patch import apply_gateway_header_patch  # noqa: E402
@@ -43,17 +41,14 @@ from evals.parameters import (  # noqa: E402
     MathAgentPromptParam,
     ResearchAgentPromptParam,
     SystemPromptParam,
-    extract_prompt_and_model,
 )
-from src.agents.deep_agent import get_supervisor, run_supervisor_with_critic  # noqa: E402
-from src.config import (  # noqa: E402
-    AgentConfig,
-    DEFAULT_MATH_AGENT_PROMPT,
-    DEFAULT_MATH_MODEL,
-    DEFAULT_RESEARCH_AGENT_PROMPT,
-    DEFAULT_RESEARCH_MODEL,
-    DEFAULT_SUPERVISOR_MODEL,
-    DEFAULT_SYSTEM_PROMPT,
+from evals.shared import (  # noqa: E402
+    extract_numbers_from_text,
+    infer_agents_from_messages,
+    is_error_output,
+    latest_assistant_text,
+    parse_with_gateway_metadata,
+    run_supervisor_task as _run_supervisor_task,
 )
 from src.helpers import extract_query_from_input  # noqa: E402
 from src.tracing import configure_adk_tracing  # noqa: E402
@@ -71,185 +66,18 @@ configure_adk_tracing(
     project_name=os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT),
 )
 
-judge_client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    default_headers={"x-bt-use-cache": "always"},
-)
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers (mirrors eval_supervisor.py conventions)
-# ---------------------------------------------------------------------------
-
-def _extract_gateway_headers(headers: Any) -> dict[str, str]:
-    gateway_metadata: dict[str, str] = {}
-    if headers is None:
-        return gateway_metadata
-    used_endpoint = headers.get("x-bt-used-endpoint")
-    cache_status = headers.get("x-bt-cached") or headers.get("x-cached")
-    if used_endpoint:
-        gateway_metadata["gateway_used_endpoint"] = str(used_endpoint)
-    if cache_status:
-        gateway_metadata["gateway_cache_status"] = str(cache_status)
-    return gateway_metadata
-
-
-def _parse_with_gateway_metadata(
-    *, model: str, input_data: list[dict[str, Any]], text_format: Any
-) -> tuple[Any, dict[str, str]]:
-    raw_response = judge_client.responses.with_raw_response.parse(
-        model=model,
-        input=input_data,
-        text_format=text_format,
-    )
-    gateway_metadata = _extract_gateway_headers(getattr(raw_response, "headers", None))
-    return raw_response.parse(), gateway_metadata
-
-
-def _is_error_output(output: Any) -> bool:
-    if output is None:
-        return True
-    if isinstance(output, dict):
-        if output.get("error"):
-            return True
-        final = output.get("final_output")
-        if final is None or (isinstance(final, str) and not final.strip()):
-            messages = output.get("messages", [])
-            if not isinstance(messages, list) or not messages:
-                return True
-    return False
-
-
-def _latest_assistant_text(output: Any) -> str:
-    if not isinstance(output, dict):
-        return str(output) if output else ""
-    final = output.get("final_output", "")
-    if isinstance(final, str) and final.strip():
-        return final.strip()
-    messages = output.get("messages", [])
-    if isinstance(messages, list):
-        for msg in reversed(messages):
-            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
-                return str(msg["content"])
-    return ""
-
-
-def _extract_numbers_from_text(text: str) -> list[float]:
-    """Extract all numeric values from a text string."""
-    # Handle scientific notation with caret (e.g., "3 x 10^5")
-    sci_caret = re.findall(r"(-?\d+(?:\.\d+)?)\s*[x×]\s*10\^(-?\d+)", text, flags=re.IGNORECASE)
-    numbers: list[float] = []
-    for base_s, exp_s in sci_caret:
-        try:
-            numbers.append(float(base_s) * (10 ** int(exp_s)))
-        except ValueError:
-            pass
-
-    # Standard numbers including scientific notation
-    raw_numbers = re.findall(r"-?\d+(?:[,_]\d+)*(?:\.\d+)?(?:[eE][+-]?\d+)?", text)
-    for n in raw_numbers:
-        try:
-            numbers.append(float(n.replace(",", "").replace("_", "")))
-        except ValueError:
-            pass
-    return numbers
-
-
-def _infer_agents_from_messages(output: Any) -> set[str]:
-    """Infer which agents were called from the serialised message trace."""
-    found: set[str] = set()
-    if not isinstance(output, dict):
-        return found
-    messages = output.get("messages", [])
-    if not isinstance(messages, list):
-        return found
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        content = str(msg.get("content", "") or "").lower()
-        if "handoff [researchagent]" in content or "request_research_subtask" in content:
-            found.add("ResearchAgent")
-        if "handoff [mathagent]" in content or "request_math_subtask" in content:
-            found.add("MathAgent")
-        tool_calls = msg.get("tool_calls")
-        if not isinstance(tool_calls, list):
-            continue
-        for tc in tool_calls:
-            if not isinstance(tc, dict):
-                continue
-            name = str(tc.get("name", "") or "").lower()
-            if any(k in name for k in ("research", "tavily", "delegate_to_research")):
-                found.add("ResearchAgent")
-            if any(k in name for k in ("math", "add", "subtract", "multiply", "divide", "delegate_to_math")):
-                found.add("MathAgent")
-    return found
-
 
 # ---------------------------------------------------------------------------
 # Task function
 # ---------------------------------------------------------------------------
 
-def _unwrap_parameters(params: dict) -> dict:
-    system_prompt, supervisor_model = extract_prompt_and_model(
-        params.get("system_prompt"),
-        default_prompt=DEFAULT_SYSTEM_PROMPT,
-        default_model=DEFAULT_SUPERVISOR_MODEL,
-    )
-    research_agent_prompt, research_model = extract_prompt_and_model(
-        params.get("research_agent_prompt"),
-        default_prompt=DEFAULT_RESEARCH_AGENT_PROMPT,
-        default_model=DEFAULT_RESEARCH_MODEL,
-    )
-    math_agent_prompt, math_model = extract_prompt_and_model(
-        params.get("math_agent_prompt"),
-        default_prompt=DEFAULT_MATH_AGENT_PROMPT,
-        default_model=DEFAULT_MATH_MODEL,
-    )
-    return {
-        "system_prompt": system_prompt,
-        "prompt_modification": "",
-        "research_agent_prompt": research_agent_prompt,
-        "math_agent_prompt": math_agent_prompt,
-        "supervisor_model": supervisor_model,
-        "research_model": research_model,
-        "math_model": math_model,
-    }
-
-
 async def run_supervisor_task(input: dict, hooks: Any = None) -> dict[str, Any]:
-    """Run a single golden test case through the full supervisor + critic pipeline."""
-    try:
-        params = hooks.parameters if hooks and hasattr(hooks, "parameters") else {}
-        config_params = _unwrap_parameters(params)
-        config = AgentConfig(**config_params) if config_params else None
-
-        supervisor = get_supervisor(config=config, force_rebuild=True)
-        query = extract_query_from_input(input)
-
-        run_result = await run_supervisor_with_critic(
-            supervisor=supervisor,
-            query=query,
-            app_name="pydantic-supervisor-eval-golden",
-        )
-        serialized_messages = run_result["messages"]
-
-        if hooks and hasattr(hooks, "metadata"):
-            hooks.metadata.update(
-                {
-                    "final_output": run_result.get("final_output", ""),
-                    "num_messages": len(serialized_messages),
-                    "critic_corrected": run_result.get("critic_corrected", False),
-                }
-            )
-
-        return {
-            "final_output": run_result.get("final_output", ""),
-            "messages": serialized_messages,
-        }
-    except Exception as e:
-        if hooks and hasattr(hooks, "metadata"):
-            hooks.metadata.update({"error": str(e)})
-        return {"final_output": "", "messages": [{"error": str(e)}]}
+    return await _run_supervisor_task(
+        input,
+        hooks,
+        app_name="pydantic-supervisor-eval-golden",
+        extra_metadata_keys=("critic_corrected",),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -269,22 +97,19 @@ async def answer_accuracy_scorer(
       case-insensitive substring.
     * ``contains_all`` – the response must contain every string in
       ``expected.answer_all`` (case-insensitive).
-
-    This is the fastest and cheapest scorer: no LLM call, pure text matching.
-    It catches regressions that LLM judges routinely miss.
     """
     del metadata, trace
 
-    if _is_error_output(output):
+    if is_error_output(output):
         return {"name": "Answer Accuracy", "score": None, "metadata": {"reason": "error output"}}
 
     if not isinstance(expected, dict):
         return {"name": "Answer Accuracy", "score": None, "metadata": {"reason": "no expected field"}}
 
     answer_type = expected.get("answer_type", "contains")
-    response_text = _latest_assistant_text(output)
+    response_text = latest_assistant_text(output)
 
-    # ── contains_numeric ────────────────────────────────────────────────────
+    # -- contains_numeric --
     if answer_type == "contains_numeric":
         raw_expected = expected.get("answer")
         if raw_expected is None:
@@ -295,7 +120,7 @@ async def answer_accuracy_scorer(
             return {"name": "Answer Accuracy", "score": None, "metadata": {"reason": "non-numeric expected answer"}}
 
         tolerance = float(expected.get("tolerance") or 0.01)
-        numbers_found = _extract_numbers_from_text(response_text)
+        numbers_found = extract_numbers_from_text(response_text)
 
         for num in numbers_found:
             if expected_value == 0:
@@ -329,7 +154,7 @@ async def answer_accuracy_scorer(
             },
         }
 
-    # ── contains ────────────────────────────────────────────────────────────
+    # -- contains --
     if answer_type == "contains":
         expected_str = str(expected.get("answer", "")).strip()
         if not expected_str:
@@ -345,7 +170,7 @@ async def answer_accuracy_scorer(
             },
         }
 
-    # ── contains_all ────────────────────────────────────────────────────────
+    # -- contains_all --
     if answer_type == "contains_all":
         required = expected.get("answer_all", [])
         if not isinstance(required, list) or not required:
@@ -373,22 +198,10 @@ async def answer_accuracy_scorer(
 async def trajectory_fidelity_scorer(
     input: Any, output: Any, expected: Any, metadata: Any, trace: Any
 ) -> dict[str, Any]:
-    """Verify that the system called the agents expected for this test case.
-
-    A score of 1.0 means all expected agents were invoked.
-    A partial score (0.5) means some but not all expected agents were invoked.
-    A score of 0.0 means none of the required agents were invoked.
-
-    When ``expected_agents`` is empty the supervisor is allowed to answer
-    directly, so the score is always 1.0 regardless of what was called.
-
-    This scorer makes it possible to catch prompt-drift or model-update
-    regressions where a capable model starts short-cutting compound queries
-    by answering directly without the required research or math delegation.
-    """
+    """Verify that the system called the agents expected for this test case."""
     del metadata, trace
 
-    if _is_error_output(output):
+    if is_error_output(output):
         return {"name": "Trajectory Fidelity", "score": None, "metadata": {"reason": "error output"}}
 
     if not isinstance(expected, dict):
@@ -396,7 +209,6 @@ async def trajectory_fidelity_scorer(
 
     expected_agents: list[str] = expected.get("expected_agents") or []
 
-    # No required agents → any trajectory is acceptable
     if not expected_agents:
         return {
             "name": "Trajectory Fidelity",
@@ -404,7 +216,7 @@ async def trajectory_fidelity_scorer(
             "metadata": {"expected_agents": [], "note": "direct answer permitted"},
         }
 
-    agents_called = _infer_agents_from_messages(output)
+    agents_called = infer_agents_from_messages(output)
     expected_set = set(expected_agents)
     hit = expected_set & agents_called
     missed = expected_set - agents_called
@@ -467,19 +279,10 @@ class AnswerGroundingOutput(BaseModel):
 async def answer_grounding_scorer(
     input: Any, output: Any, expected: Any, metadata: Any, trace: Any
 ) -> dict[str, Any]:
-    """LLM judge that scores whether the response contains the expected answer.
-
-    Unlike a free-form LLM judge, this scorer is *anchored* to the known
-    correct answer.  This dramatically reduces hallucinated scores: the judge
-    does not need to independently know the right answer — it only needs to
-    verify that the AI's response matches the provided ground truth.
-
-    This produces a well-calibrated signal even for obscure facts or
-    calculations where a free-form judge would be unreliable.
-    """
+    """LLM judge anchored to the known correct answer."""
     del metadata, trace
 
-    if _is_error_output(output):
+    if is_error_output(output):
         return {"name": "Answer Grounding", "score": None, "metadata": {"reason": "error output"}}
 
     if not isinstance(expected, dict):
@@ -502,7 +305,7 @@ async def answer_grounding_scorer(
     else:
         question = str(input)
 
-    ai_response = _latest_assistant_text(output)
+    ai_response = latest_assistant_text(output)
 
     prompt = ANSWER_GROUNDING_PROMPT.format(
         question=question,
@@ -510,7 +313,7 @@ async def answer_grounding_scorer(
         ai_response=ai_response or "(no response)",
     )
 
-    response, gateway_metadata = _parse_with_gateway_metadata(
+    response, gateway_metadata = parse_with_gateway_metadata(
         model=os.environ.get("EVAL_JUDGE_MODEL", "gpt-4o"),
         input_data=[{"role": "user", "content": prompt}],
         text_format=AnswerGroundingOutput,
@@ -573,34 +376,41 @@ def get_eval_data(project_name: str):
 # Eval registration
 # ---------------------------------------------------------------------------
 
-project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
+def _register_eval():
+    project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
 
-use_published_step_scorer = (
-    os.environ.get("USE_PUBLISHED_STEP_SCORER", "1").lower() in {"1", "true", "yes"}
-)
-step_efficiency_score = (
-    init_function(project_name=project_name, slug="step-efficiency")
-    if use_published_step_scorer
-    else None
-)
+    use_published_step_scorer = (
+        os.environ.get("USE_PUBLISHED_STEP_SCORER", "1").lower() in {"1", "true", "yes"}
+    )
+    step_efficiency_score = (
+        init_function(project_name=project_name, slug="step-efficiency")
+        if use_published_step_scorer
+        else None
+    )
 
-scorers: list[Any] = [
-    answer_accuracy_scorer,
-    trajectory_fidelity_scorer,
-    answer_grounding_scorer,
-]
-if step_efficiency_score is not None:
-    scorers.append(step_efficiency_score)
+    scorers: list[Any] = [
+        answer_accuracy_scorer,
+        trajectory_fidelity_scorer,
+        answer_grounding_scorer,
+    ]
+    if step_efficiency_score is not None:
+        scorers.append(step_efficiency_score)
 
-Eval(
-    project_name,
-    experiment_name="golden-ground-truth",
-    data=get_eval_data(project_name),
-    task=run_supervisor_task,
-    scores=scorers,  # type: ignore
-    parameters={
-        "system_prompt": SystemPromptParam,
-        "research_agent_prompt": ResearchAgentPromptParam,
-        "math_agent_prompt": MathAgentPromptParam,
-    },
-)
+    Eval(
+        project_name,
+        experiment_name="golden-ground-truth",
+        data=get_eval_data(project_name),
+        task=run_supervisor_task,
+        scores=scorers,  # type: ignore
+        parameters={
+            "system_prompt": SystemPromptParam,
+            "research_agent_prompt": ResearchAgentPromptParam,
+            "math_agent_prompt": MathAgentPromptParam,
+        },
+    )
+
+
+# Register the eval at import time (required by braintrust eval's lazy-load discovery).
+# Set SKIP_EVAL_REGISTRATION=1 to import scorers without triggering the eval.
+if not os.environ.get("SKIP_EVAL_REGISTRATION"):
+    _register_eval()

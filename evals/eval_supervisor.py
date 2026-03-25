@@ -14,7 +14,6 @@ if str(project_root) not in sys.path:
 
 from braintrust import Eval, init_dataset, init_function  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
-from openai import OpenAI  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from evals.braintrust_parameter_patch import apply_parameter_patch  # noqa: E402
@@ -24,18 +23,14 @@ from evals.parameters import (  # noqa: E402
     PromptModificationParam,
     ResearchAgentPromptParam,
     SystemPromptParam,
-    extract_prompt_and_model,
 )
-from src.agents.deep_agent import get_supervisor, run_supervisor_with_critic  # noqa: E402
-from src.config import (  # noqa: E402
-    AgentConfig,
-    DEFAULT_MATH_AGENT_PROMPT,
-    DEFAULT_MATH_MODEL,
-    DEFAULT_RESEARCH_AGENT_PROMPT,
-    DEFAULT_RESEARCH_MODEL,
-    DEFAULT_SUPERVISOR_MODEL,
-    DEFAULT_SYSTEM_PROMPT,
-)  # noqa: E402
+from evals.shared import (  # noqa: E402
+    is_error_output,
+    latest_assistant_text,
+    output_messages,
+    parse_with_gateway_metadata,
+    run_supervisor_task as _run_supervisor_task,
+)
 from src.helpers import extract_query_from_input  # noqa: E402
 from src.tracing import configure_adk_tracing  # noqa: E402
 
@@ -52,115 +47,22 @@ configure_adk_tracing(
     project_name=os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT),
 )
 
-judge_client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    default_headers={"x-bt-use-cache": "always"},
-)
 
-
-def _extract_gateway_headers(headers: Any) -> dict[str, str]:
-    """Extract gateway-specific response headers from raw OpenAI responses."""
-    gateway_metadata: dict[str, str] = {}
-    if headers is None:
-        return gateway_metadata
-
-    used_endpoint = headers.get("x-bt-used-endpoint")
-    cache_status = headers.get("x-bt-cached") or headers.get("x-cached")
-
-    if used_endpoint:
-        gateway_metadata["gateway_used_endpoint"] = str(used_endpoint)
-    if cache_status:
-        gateway_metadata["gateway_cache_status"] = str(cache_status)
-    return gateway_metadata
-
-
-def _parse_with_gateway_metadata(*, model: str, input_data: list[dict[str, Any]], text_format: Any) -> tuple[Any, dict[str, str]]:
-    """Parse a Responses API call while preserving gateway response headers."""
-    raw_response = judge_client.responses.with_raw_response.parse(
-        model=model,
-        input=input_data,
-        text_format=text_format,
-    )
-    gateway_metadata = _extract_gateway_headers(getattr(raw_response, "headers", None))
-    parsed_response = raw_response.parse()
-    return parsed_response, gateway_metadata
-
-
-def unwrap_parameters(params: dict) -> dict:
-    """Extract raw parameter values from Braintrust parameter objects."""
-    import inspect
-
-    from pydantic import BaseModel
-
-    system_prompt, supervisor_model = extract_prompt_and_model(
-        params.get("system_prompt"),
-        default_prompt=DEFAULT_SYSTEM_PROMPT,
-        default_model=DEFAULT_SUPERVISOR_MODEL,
-    )
-    research_agent_prompt, research_model = extract_prompt_and_model(
-        params.get("research_agent_prompt"),
-        default_prompt=DEFAULT_RESEARCH_AGENT_PROMPT,
-        default_model=DEFAULT_RESEARCH_MODEL,
-    )
-    math_agent_prompt, math_model = extract_prompt_and_model(
-        params.get("math_agent_prompt"),
-        default_prompt=DEFAULT_MATH_AGENT_PROMPT,
-        default_model=DEFAULT_MATH_MODEL,
-    )
-
-    prompt_modification = params.get("prompt_modification")
-    if inspect.isclass(prompt_modification) and issubclass(prompt_modification, BaseModel):
-        prompt_modification = getattr(prompt_modification(), "value", "")
-    elif isinstance(prompt_modification, BaseModel):
-        prompt_modification = getattr(prompt_modification, "value", "")
-    elif prompt_modification is None:
-        prompt_modification = ""
-
-    return {
-        "system_prompt": system_prompt,
-        "prompt_modification": prompt_modification,
-        "research_agent_prompt": research_agent_prompt,
-        "math_agent_prompt": math_agent_prompt,
-        "supervisor_model": supervisor_model,
-        "research_model": research_model,
-        "math_model": math_model,
-    }
-
+# ---------------------------------------------------------------------------
+# Task function
+# ---------------------------------------------------------------------------
 
 async def run_supervisor_task(input: dict, hooks: Any = None) -> dict[str, Any]:
-    """Run a single task through the supervisor and return serialized messages."""
-    try:
-        params = hooks.parameters if hooks and hasattr(hooks, "parameters") else {}
-        config_params = unwrap_parameters(params)
-        config = AgentConfig(**config_params) if config_params else None
+    return await _run_supervisor_task(
+        input,
+        hooks,
+        app_name="pydantic-supervisor-eval-supervisor",
+    )
 
-        supervisor = get_supervisor(config=config, force_rebuild=True)
-        query = extract_query_from_input(input)
 
-        run_result = await run_supervisor_with_critic(
-            supervisor=supervisor,
-            query=query,
-            app_name="pydantic-supervisor-eval-supervisor",
-        )
-        serialized_messages = run_result["messages"]
-
-        if hooks and hasattr(hooks, "metadata"):
-            hooks.metadata.update(
-                {
-                    "final_output": run_result.get("final_output", ""),
-                    "num_messages": len(serialized_messages),
-                }
-            )
-
-        return {
-            "final_output": run_result.get("final_output", ""),
-            "messages": serialized_messages,
-        }
-    except Exception as e:
-        if hooks and hasattr(hooks, "metadata"):
-            hooks.metadata.update({"error": str(e)})
-        return {"final_output": "", "messages": [{"error": str(e)}]}
-
+# ---------------------------------------------------------------------------
+# Supervisor-specific query heuristics
+# ---------------------------------------------------------------------------
 
 def _query_requires_math_handoff(query: str) -> bool:
     q = query.lower()
@@ -210,30 +112,6 @@ def _query_requires_research_handoff(query: str) -> bool:
     return bool(re.search(r"\b(who|what|when|where)\b", q)) and (not _query_requires_math_handoff(query))
 
 
-def _is_error_output(output: Any) -> bool:
-    """Return True when the task produced no usable output (e.g. an auth error)."""
-    if output is None:
-        return True
-    if isinstance(output, dict):
-        if output.get("error"):
-            return True
-        final = output.get("final_output")
-        if final is None or (isinstance(final, str) and not final.strip()):
-            messages = output.get("messages", [])
-            if not isinstance(messages, list) or not messages:
-                return True
-    return False
-
-
-def _output_messages(output: Any) -> list[dict[str, Any]]:
-    if not isinstance(output, dict):
-        return []
-    messages = output.get("messages", [])
-    if not isinstance(messages, list):
-        return []
-    return [m for m in messages if isinstance(m, dict)]
-
-
 def _has_message_marker(messages: list[dict[str, Any]], markers: tuple[str, ...]) -> bool:
     lowered = tuple(m.lower() for m in markers)
     for message in messages:
@@ -252,11 +130,15 @@ def _has_message_marker(messages: list[dict[str, Any]], markers: tuple[str, ...]
     return False
 
 
+# ---------------------------------------------------------------------------
+# Scorers
+# ---------------------------------------------------------------------------
+
 async def delegation_compliance_scorer(input, output, expected, metadata, trace):
     """Deterministic policy compliance check for required delegation markers."""
     del expected, metadata, trace
 
-    if _is_error_output(output):
+    if is_error_output(output):
         return {"name": "Delegation Compliance", "score": None}
 
     if isinstance(input, dict):
@@ -267,7 +149,7 @@ async def delegation_compliance_scorer(input, output, expected, metadata, trace)
     else:
         query = str(input)
 
-    messages = _output_messages(output)
+    messages = output_messages(output)
 
     requires_math = _query_requires_math_handoff(query)
     requires_research = _query_requires_research_handoff(query)
@@ -416,7 +298,7 @@ async def _collect_agents_called(trace: Any, output: Any) -> list[str]:
 
 
 async def routing_accuracy_scorer(input, output, expected, metadata, trace):
-    if _is_error_output(output):
+    if is_error_output(output):
         return {"name": "Routing Accuracy", "score": None}
 
     choice_map = {"A": 1.0, "B": 0.7, "C": 0.3, "D": 0.0}
@@ -432,7 +314,7 @@ async def routing_accuracy_scorer(input, output, expected, metadata, trace):
         input=input,
         agents_called=agents_called_str,
     )
-    response, gateway_metadata = _parse_with_gateway_metadata(
+    response, gateway_metadata = parse_with_gateway_metadata(
         model="gpt-4o-mini",
         input_data=[{"role": "user", "content": prompt}],
         text_format=RoutingAccuracyOutput,
@@ -490,18 +372,6 @@ POOR
 """
 
 
-def _latest_assistant_text(output: Any) -> str:
-    if not isinstance(output, dict):
-        return ""
-    messages = output.get("messages", [])
-    if not isinstance(messages, list):
-        return ""
-    for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
-            return str(msg.get("content"))
-    return ""
-
-
 def _is_self_contained_math_query(query: str) -> bool:
     q = query.lower()
 
@@ -536,7 +406,7 @@ async def no_unnecessary_clarification_scorer(input, output, expected, metadata,
     """Penalize asking for clarification when the math prompt is already self-contained."""
     del expected, metadata, trace
 
-    if _is_error_output(output):
+    if is_error_output(output):
         return {"name": "No Unnecessary Clarification", "score": None}
 
     if isinstance(input, dict):
@@ -547,7 +417,7 @@ async def no_unnecessary_clarification_scorer(input, output, expected, metadata,
     else:
         query = str(input)
 
-    assistant_text = _latest_assistant_text(output)
+    assistant_text = latest_assistant_text(output)
     self_contained = _is_self_contained_math_query(query)
     asked_for_clarification = _looks_like_clarification_request(assistant_text)
 
@@ -575,10 +445,10 @@ async def response_quality_scorer(input, output, expected, metadata, trace):
     """Score response quality with structured output parsing."""
     del expected, metadata, trace
 
-    if _is_error_output(output):
+    if is_error_output(output):
         return {"name": "Response Quality", "score": None}
 
-    assistant_response = _latest_assistant_text(output)
+    assistant_response = latest_assistant_text(output)
 
     if isinstance(input, dict):
         try:
@@ -593,7 +463,7 @@ async def response_quality_scorer(input, output, expected, metadata, trace):
         assistant_response or str(output),
     )
 
-    response, gateway_metadata = _parse_with_gateway_metadata(
+    response, gateway_metadata = parse_with_gateway_metadata(
         model=os.environ.get("EVAL_JUDGE_MODEL", "gpt-4o"),
         input_data=[{"role": "user", "content": prompt}],
         text_format=ResponseQualityOutput,
@@ -632,6 +502,10 @@ async def step_efficiency_scorer(output):
         return 1.0
     return max(0.0, 1.0 - (num_steps - max_steps) / max_steps)
 
+
+# ---------------------------------------------------------------------------
+# Dataset loader
+# ---------------------------------------------------------------------------
 
 def load_local_dataset() -> list[dict[str, Any]]:
     """Load eval data from local dataset.jsonl for deterministic local execution."""
@@ -682,32 +556,63 @@ def get_eval_data(project_name: str):
     return load_local_dataset()
 
 
-project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
+# ---------------------------------------------------------------------------
+# Eval registration
+# ---------------------------------------------------------------------------
 
-use_published_step_scorer = (
-    os.environ.get("USE_PUBLISHED_STEP_SCORER", "1").lower() in {"1", "true", "yes"}
-)
-step_efficiency_score = (
-    init_function(project_name=project_name, slug="step-efficiency")
-    if use_published_step_scorer
-    else step_efficiency_scorer
-)
+def _register_eval():
+    project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
 
-Eval(
-    project_name,
-    data=get_eval_data(project_name),
-    task=run_supervisor_task,
-    scores=[
-        response_quality_scorer,
-        no_unnecessary_clarification_scorer,
-        routing_accuracy_scorer,
-        delegation_compliance_scorer,
-        step_efficiency_score,
-    ],  # type: ignore
-    parameters={
-        "system_prompt": SystemPromptParam,
-        "prompt_modification": PromptModificationParam,
-        "research_agent_prompt": ResearchAgentPromptParam,
-        "math_agent_prompt": MathAgentPromptParam,
-    },
-)
+    use_published_step_scorer = (
+        os.environ.get("USE_PUBLISHED_STEP_SCORER", "1").lower() in {"1", "true", "yes"}
+    )
+    published_step_efficiency_score = (
+        init_function(project_name=project_name, slug="step-efficiency")
+        if use_published_step_scorer
+        else None
+    )
+
+    async def step_efficiency_score(output: Any):
+        """Use the published scorer when available, with local fallback on invoke failures."""
+        if published_step_efficiency_score is None:
+            return await step_efficiency_scorer(output)
+
+        try:
+            return published_step_efficiency_score(output=output)
+        except Exception as exc:
+            fallback_score = await step_efficiency_scorer(output)
+            return {
+                "name": "Step Efficiency",
+                "score": fallback_score,
+                "metadata": {
+                    "fallback": "local_step_efficiency_scorer",
+                    "published_invoke_error": f"{type(exc).__name__}: {exc}",
+                    "project_name": project_name,
+                    "scorer_slug": "step-efficiency",
+                },
+            }
+
+    Eval(
+        project_name,
+        data=get_eval_data(project_name),
+        task=run_supervisor_task,
+        scores=[
+            response_quality_scorer,
+            no_unnecessary_clarification_scorer,
+            routing_accuracy_scorer,
+            delegation_compliance_scorer,
+            step_efficiency_score,
+        ],  # type: ignore
+        parameters={
+            "system_prompt": SystemPromptParam,
+            "prompt_modification": PromptModificationParam,
+            "research_agent_prompt": ResearchAgentPromptParam,
+            "math_agent_prompt": MathAgentPromptParam,
+        },
+    )
+
+
+# Register the eval at import time (required by braintrust eval's lazy-load discovery).
+# Set SKIP_EVAL_REGISTRATION=1 to import scorers without triggering the eval.
+if not os.environ.get("SKIP_EVAL_REGISTRATION"):
+    _register_eval()
