@@ -163,31 +163,17 @@ def configure_otel_exporter(*, service_name: str, run_tag: str | None = None) ->
     _config_signature = signature
 
 
-def _fragment_for_step(seed: str, *, step: int, target_chars: int) -> str:
-    """Build one deterministic fragment without materializing the full payload."""
+def _seed_segment(seed: str, *, step: int, slot: int, target_chars: int) -> str:
     if target_chars <= 0:
         return ""
     if not seed:
         seed = "x"
-    if len(seed) >= target_chars:
-        offset = step % len(seed)
-        rotated = seed[offset:] + seed[:offset]
+    offset = (step * 131 + slot * 37) % len(seed)
+    rotated = seed[offset:] + seed[:offset]
+    if len(rotated) >= target_chars:
         return rotated[:target_chars]
-
-    out = []
-    remaining = target_chars
-    offset = step % len(seed)
-    head = seed[offset:] + seed[:offset]
-    while remaining > 0:
-        chunk = head if out else head
-        if len(chunk) <= remaining:
-            out.append(chunk)
-            remaining -= len(chunk)
-        else:
-            out.append(chunk[:remaining])
-            remaining = 0
-        head = seed
-    return "".join(out)
+    repeats = (target_chars + len(rotated) - 1) // len(rotated)
+    return (rotated * repeats)[:target_chars]
 
 
 def _resolve_target_bytes(payload_profile: str, inject_large_attributes: bool) -> int:
@@ -217,7 +203,87 @@ def _resolve_fragment_bytes() -> int:
         parsed = int(raw)
     except ValueError:
         parsed = 8_192
-    return max(256, parsed)
+    # Keep spans production-like and protect the host from accidental giant
+    # single-span payload settings.
+    return min(max(256, parsed), 65_536)
+
+
+def _attrs_size_bytes(attrs: dict[str, Any]) -> int:
+    return len(json.dumps(attrs, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _base_turn_attributes(
+    *,
+    step: int,
+    synthetic_spans: int,
+    query: str,
+    final_output: str,
+    tool_names: list[str],
+    seed: str,
+) -> dict[str, Any]:
+    tool_name = tool_names[step % len(tool_names)] if tool_names else "delegate_to_research_agent"
+    has_error = (step % 29) == 0 and step > 0
+    return {
+        "bt.span.type": "llm",
+        "bt.trace.component": "pydantic-supervisor",
+        "bt.trace.turn_index": step,
+        "bt.trace.turn_count": synthetic_spans,
+        "bt.trace.turn_role": "assistant",
+        "bt.agent.name": "supervisor_with_critic",
+        "bt.agent.phase": "single_turn_conversation",
+        "bt.model.provider": "google",
+        "bt.model.name": "gemini-2.0-flash-lite",
+        "bt.model.temperature": 0.1,
+        "bt.model.max_output_tokens": 1024,
+        "bt.input.user_message": query[:512],
+        "bt.output.assistant_message": final_output[:512],
+        "bt.tool.name": tool_name,
+        "bt.tool.invocation_index": step % max(1, len(tool_names)),
+        "bt.metrics.prompt_tokens": 800 + (step % 120),
+        "bt.metrics.completion_tokens": 200 + (step % 90),
+        "bt.metrics.total_tokens": 1000 + (step % 210),
+        "bt.metrics.latency_ms": 250 + (step % 350),
+        "bt.metrics.queue_ms": 5 + (step % 12),
+        "bt.error.present": has_error,
+        "bt.error.type": "none" if not has_error else "tool_timeout",
+        "bt.error.retriable": bool(has_error and step % 2 == 0),
+        "bt.turn.synthetic_seed": _seed_segment(seed, step=step, slot=0, target_chars=128),
+    }
+
+
+def _expanded_turn_attributes(
+    *,
+    step: int,
+    target_span_bytes: int,
+    seed: str,
+    base: dict[str, Any],
+) -> dict[str, Any]:
+    attrs = dict(base)
+    if _attrs_size_bytes(attrs) >= target_span_bytes:
+        return attrs
+
+    key_specs = [
+        ("bt.prompt.system", 256),
+        ("bt.prompt.instructions", 384),
+        ("bt.context.thread_summary", 384),
+        ("bt.context.research_notes", 512),
+        ("bt.context.math_notes", 256),
+        ("bt.context.tool_args", 384),
+        ("bt.context.tool_result", 512),
+        ("bt.context.validation", 256),
+        ("bt.output.critic_feedback", 384),
+        ("bt.output.final_answer", 512),
+    ]
+
+    slot = 1
+    while _attrs_size_bytes(attrs) < target_span_bytes:
+        for key, chars in key_specs:
+            if _attrs_size_bytes(attrs) >= target_span_bytes:
+                break
+            numbered_key = f"{key}.{slot:03d}"
+            attrs[numbered_key] = _seed_segment(seed, step=step, slot=slot, target_chars=chars)
+            slot += 1
+    return attrs
 
 
 def _resolve_pause_config() -> tuple[int, int]:
@@ -268,7 +334,7 @@ def emit_supervisor_trace(
     profile = _normalize_payload_profile(payload_profile)
     profile_cfg = _payload_profile_config[profile]
     target_payload_bytes = _resolve_target_bytes(profile, inject_large_attributes)
-    fragment_target_bytes = _resolve_fragment_bytes()
+    span_target_bytes = _resolve_fragment_bytes()
     pause_ms, pause_every = _resolve_pause_config()
     payload_seed = json.dumps(
         {
@@ -282,7 +348,7 @@ def emit_supervisor_trace(
 
     tool_names = _iter_tool_names(messages)
     min_spans = int(profile_cfg["extra_spans"])
-    synthetic_spans = max(min_spans, (target_payload_bytes + fragment_target_bytes - 1) // fragment_target_bytes)
+    synthetic_spans = max(min_spans, (target_payload_bytes + span_target_bytes - 1) // span_target_bytes)
     root_payload_preview = payload_seed[:4096]
 
     root_attributes: dict[str, Any] = {
@@ -290,7 +356,7 @@ def emit_supervisor_trace(
         "trace.payload_profile": profile,
         "trace.inject_large_attributes": inject_large_attributes,
         "trace.target_payload_bytes": target_payload_bytes,
-        "trace.fragment_target_bytes": fragment_target_bytes,
+        "trace.span_target_bytes": span_target_bytes,
         "trace.pause_ms": pause_ms,
         "trace.pause_every_spans": pause_every,
         "agent.query": query[:4096],
@@ -329,19 +395,27 @@ def emit_supervisor_trace(
             if pause_ms > 0 and pause_every > 0 and idx > 0 and idx % pause_every == 0:
                 time.sleep(pause_ms / 1000.0)
             remaining_bytes = max(0, target_payload_bytes - emitted_payload_bytes)
-            if remaining_bytes <= 0:
-                fragment_chars = 0
-            else:
-                fragment_chars = min(fragment_target_bytes, remaining_bytes)
-            fragment = _fragment_for_step(payload_seed, step=idx, target_chars=fragment_chars)
-            emitted_payload_bytes += len(fragment.encode("utf-8"))
+            stage_target_bytes = span_target_bytes if remaining_bytes <= 0 else min(
+                span_target_bytes, remaining_bytes
+            )
+            turn_attrs = _base_turn_attributes(
+                step=idx,
+                synthetic_spans=synthetic_spans,
+                query=query,
+                final_output=final_output,
+                tool_names=tool_names,
+                seed=payload_seed,
+            )
+            turn_attrs = _expanded_turn_attributes(
+                step=idx,
+                target_span_bytes=stage_target_bytes,
+                seed=payload_seed,
+                base=turn_attrs,
+            )
+            emitted_payload_bytes += _attrs_size_bytes(turn_attrs)
             with _tracer.start_as_current_span(
                 f"synthetic_step_{idx:03d}",
-                attributes={
-                    "synthetic.step": idx,
-                    "synthetic.fragment": fragment,
-                    "synthetic.fragment_chars": len(fragment),
-                },
+                attributes=turn_attrs,
             ):
                 pass
 
