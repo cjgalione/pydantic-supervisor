@@ -29,6 +29,7 @@ TRACE_SPAN_PAUSE_MS="${TEMPO_TRACE_SPAN_PAUSE_MS:-0}"
 TRACE_SPAN_PAUSE_EVERY="${TEMPO_TRACE_SPAN_PAUSE_EVERY:-0}"
 SEARCH_PROBE_REQUESTS="${TEMPO_SEARCH_PROBE_REQUESTS:-20}"
 SEARCH_PROBE_DELAY_MS="${TEMPO_SEARCH_PROBE_DELAY_MS:-100}"
+QUERY_CLASSES="${TEMPO_QUERY_CLASSES:-generic,span_name,svc_field,dot_svc_field}"
 OTEL_BSP_MAX_QUEUE_SIZE="${TEMPO_OTEL_BSP_MAX_QUEUE_SIZE:-8192}"
 OTEL_BSP_MAX_EXPORT_BATCH_SIZE="${TEMPO_OTEL_BSP_MAX_EXPORT_BATCH_SIZE:-128}"
 OTEL_BSP_SCHEDULE_DELAY="${TEMPO_OTEL_BSP_SCHEDULE_DELAY:-500}"
@@ -97,6 +98,54 @@ function json_http_probe() {
   fi
 }
 
+function json_http_probe_traceql() {
+  local url="$1"
+  local auth="$2"
+  local traceql="$3"
+
+  if [[ -z "$traceql" ]]; then
+    json_http_probe "$url" "$auth"
+    return 0
+  fi
+
+  if [[ -n "$auth" ]]; then
+    curl -sS -u "$auth" --get \
+      --data-urlencode "q=$traceql" \
+      --data "limit=20" \
+      -o /tmp/tempo_probe_body.txt \
+      -w '{"http_code":%{http_code},"time_total":%{time_total}}' \
+      "$url" || echo '{"http_code":0,"time_total":0.0}'
+  else
+    curl -sS --get \
+      --data-urlencode "q=$traceql" \
+      --data "limit=20" \
+      -o /tmp/tempo_probe_body.txt \
+      -w '{"http_code":%{http_code},"time_total":%{time_total}}' \
+      "$url" || echo '{"http_code":0,"time_total":0.0}'
+  fi
+}
+
+function traceql_for_class() {
+  local class_name="$1"
+  case "$class_name" in
+    generic)
+      echo ""
+      ;;
+    span_name)
+      echo '{name="synthetic_step_000"}'
+      ;;
+    svc_field)
+      echo '{resource.service.name="pydantic-supervisor"}'
+      ;;
+    dot_svc_field)
+      echo '{.service.name="pydantic-supervisor"}'
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
 function wait_for_http_200() {
   local name="$1"
   local url="$2"
@@ -158,6 +207,7 @@ function capture_environment_header() {
   ,"trace_span_pause_every": $TRACE_SPAN_PAUSE_EVERY
   ,"search_probe_requests": $SEARCH_PROBE_REQUESTS
   ,"search_probe_delay_ms": $SEARCH_PROBE_DELAY_MS
+  ,"query_classes": $(echo "$QUERY_CLASSES" | json_escape)
   ,"otel_bsp_max_queue_size": $OTEL_BSP_MAX_QUEUE_SIZE
   ,"otel_bsp_max_export_batch_size": $OTEL_BSP_MAX_EXPORT_BATCH_SIZE
   ,"otel_bsp_schedule_delay": $OTEL_BSP_SCHEDULE_DELAY
@@ -267,21 +317,31 @@ function run_stage() {
     collector_probe="$(json_http_probe 'http://localhost:13133/')"
 
     : > "$query_probe_file"
-    for _ in $(seq 1 "$SEARCH_PROBE_REQUESTS"); do
-      tempo_search_probe="$(json_http_probe 'http://localhost:3200/api/search?limit=20')"
-      grafana_search_probe="$(json_http_probe 'http://localhost:3000/api/datasources/proxy/uid/tempo/api/search?limit=20' 'admin:admin')"
-      cat >> "$query_probe_file" <<EOF
-{"tempo": $tempo_search_probe, "grafana": $grafana_search_probe}
-EOF
-      if [[ "$SEARCH_PROBE_DELAY_MS" -gt 0 ]]; then
-        sleep "$(python3 -c "print($SEARCH_PROBE_DELAY_MS/1000)")"
+    local -a probe_classes=()
+    IFS=',' read -r -a probe_classes <<< "$QUERY_CLASSES"
+    for class_name in "${probe_classes[@]}"; do
+      class_name="${class_name//[[:space:]]/}"
+      if [[ -z "$class_name" ]]; then
+        continue
       fi
+      traceql="$(traceql_for_class "$class_name")"
+      for _ in $(seq 1 "$SEARCH_PROBE_REQUESTS"); do
+        tempo_search_probe="$(json_http_probe_traceql 'http://localhost:3200/api/search' '' "$traceql")"
+        grafana_search_probe="$(json_http_probe_traceql 'http://localhost:3000/api/datasources/proxy/uid/tempo/api/search' 'admin:admin' "$traceql")"
+        cat >> "$query_probe_file" <<EOF
+{"class": "$class_name", "tempo": $tempo_search_probe, "grafana": $grafana_search_probe}
+EOF
+        if [[ "$SEARCH_PROBE_DELAY_MS" -gt 0 ]]; then
+          sleep "$(python3 -c "print($SEARCH_PROBE_DELAY_MS/1000)")"
+        fi
+      done
     done
 
     query_probe_summary="$(python3 - "$query_probe_file" <<'PY'
 import json
 import sys
 from statistics import median
+from collections import defaultdict
 
 path = sys.argv[1]
 tempo_latencies = []
@@ -289,6 +349,15 @@ grafana_latencies = []
 tempo_failures = 0
 grafana_failures = 0
 samples = 0
+class_data: dict[str, dict[str, list[float] | int]] = defaultdict(
+    lambda: {
+        "tempo_latencies": [],
+        "grafana_latencies": [],
+        "tempo_failures": 0,
+        "grafana_failures": 0,
+        "samples": 0,
+    }
+)
 
 with open(path, "r", encoding="utf-8") as f:
     for line in f:
@@ -297,16 +366,25 @@ with open(path, "r", encoding="utf-8") as f:
             continue
         samples += 1
         row = json.loads(line)
+        class_name = str(row.get("class") or "generic")
         tempo = row.get("tempo", {})
         grafana = row.get("grafana", {})
         tempo_code = int(tempo.get("http_code", 0) or 0)
         grafana_code = int(grafana.get("http_code", 0) or 0)
-        tempo_latencies.append(float(tempo.get("time_total", 0.0) or 0.0))
-        grafana_latencies.append(float(grafana.get("time_total", 0.0) or 0.0))
+        tempo_latency = float(tempo.get("time_total", 0.0) or 0.0)
+        grafana_latency = float(grafana.get("time_total", 0.0) or 0.0)
+        tempo_latencies.append(tempo_latency)
+        grafana_latencies.append(grafana_latency)
+        class_entry = class_data[class_name]
+        class_entry["samples"] = int(class_entry["samples"]) + 1
+        class_entry["tempo_latencies"].append(tempo_latency)
+        class_entry["grafana_latencies"].append(grafana_latency)
         if tempo_code < 200 or tempo_code >= 300:
             tempo_failures += 1
+            class_entry["tempo_failures"] = int(class_entry["tempo_failures"]) + 1
         if grafana_code < 200 or grafana_code >= 300:
             grafana_failures += 1
+            class_entry["grafana_failures"] = int(class_entry["grafana_failures"]) + 1
 
 def p95(values):
     if not values:
@@ -314,6 +392,20 @@ def p95(values):
     vals = sorted(values)
     idx = min(len(vals) - 1, int((len(vals) - 1) * 0.95))
     return vals[idx]
+
+class_summary: dict[str, dict[str, float | int]] = {}
+for class_name, payload in class_data.items():
+    t_lat = payload["tempo_latencies"]
+    g_lat = payload["grafana_latencies"]
+    class_summary[class_name] = {
+        "samples": int(payload["samples"]),
+        "tempo_failures": int(payload["tempo_failures"]),
+        "grafana_failures": int(payload["grafana_failures"]),
+        "tempo_p95_seconds": p95(t_lat),
+        "grafana_p95_seconds": p95(g_lat),
+        "tempo_median_seconds": median(t_lat) if t_lat else 0.0,
+        "grafana_median_seconds": median(g_lat) if g_lat else 0.0,
+    }
 
 summary = {
     "samples": samples,
@@ -323,6 +415,7 @@ summary = {
     "grafana_p95_seconds": p95(grafana_latencies),
     "tempo_median_seconds": median(tempo_latencies) if tempo_latencies else 0.0,
     "grafana_median_seconds": median(grafana_latencies) if grafana_latencies else 0.0,
+    "classes": class_summary,
 }
 print(json.dumps(summary))
 PY

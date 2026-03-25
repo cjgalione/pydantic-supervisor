@@ -11,6 +11,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+QUERY_CLASSES = ["generic", "span_name", "svc_field", "dot_svc_field"]
+
 
 def _parse_stage_run(file_name: str) -> tuple[str, int] | None:
     m = re.match(r"(?P<stage>[a-z0-9_]+)_run(?P<run>\d+)\.json$", file_name)
@@ -119,6 +121,7 @@ def main() -> None:
         tempo_http, tempo_seconds = _probe_fields((query_checks.get("tempo_probe") or {}))
         grafana_http, grafana_seconds = _probe_fields((query_checks.get("grafana_probe") or {}))
         search_probe = query_checks.get("search_probe") or {}
+        search_probe_classes = search_probe.get("classes") or {}
 
         attempts = int(metrics.get("attempts", 0) or 0)
         failures = int(metrics.get("failures", 0) or 0)
@@ -165,6 +168,13 @@ def main() -> None:
             "oom_killed": bool(oom_killed),
             "restart_count": int(restart_count),
         }
+        for query_class in QUERY_CLASSES:
+            class_payload = search_probe_classes.get(query_class) or {}
+            row[f"{query_class}_probe_samples"] = int(class_payload.get("samples", 0) or 0)
+            row[f"tempo_{query_class}_probe_failures"] = int(class_payload.get("tempo_failures", 0) or 0)
+            row[f"grafana_{query_class}_probe_failures"] = int(class_payload.get("grafana_failures", 0) or 0)
+            row[f"tempo_{query_class}_probe_p95_seconds"] = float(class_payload.get("tempo_p95_seconds", 0.0) or 0.0)
+            row[f"grafana_{query_class}_probe_p95_seconds"] = float(class_payload.get("grafana_p95_seconds", 0.0) or 0.0)
         row["criteria_failed"] = _criteria_failed(row)
         row["failure_reasons"] = ",".join(_failure_reasons(row))
         rows.append(row)
@@ -204,6 +214,16 @@ def main() -> None:
         "criteria_failed",
         "failure_reasons",
     ]
+    for query_class in QUERY_CLASSES:
+        fieldnames.extend(
+            [
+                f"{query_class}_probe_samples",
+                f"tempo_{query_class}_probe_failures",
+                f"grafana_{query_class}_probe_failures",
+                f"tempo_{query_class}_probe_p95_seconds",
+                f"grafana_{query_class}_probe_p95_seconds",
+            ]
+        )
 
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -274,6 +294,35 @@ def main() -> None:
     synthetic_summary = _slice_summary(synthetic_rows)
     live_summary = _slice_summary(live_rows)
 
+    class_summary_lines: list[str] = []
+    for query_class in QUERY_CLASSES:
+        class_tempo_p95_vals = [
+            float(row.get(f"tempo_{query_class}_probe_p95_seconds", 0.0) or 0.0)
+            for row in rows
+            if int(row.get(f"{query_class}_probe_samples", 0) or 0) > 0
+        ]
+        class_grafana_p95_vals = [
+            float(row.get(f"grafana_{query_class}_probe_p95_seconds", 0.0) or 0.0)
+            for row in rows
+            if int(row.get(f"{query_class}_probe_samples", 0) or 0) > 0
+        ]
+        total_samples = sum(int(row.get(f"{query_class}_probe_samples", 0) or 0) for row in rows)
+        total_failures = sum(
+            int(row.get(f"tempo_{query_class}_probe_failures", 0) or 0)
+            + int(row.get(f"grafana_{query_class}_probe_failures", 0) or 0)
+            for row in rows
+        )
+        if total_samples == 0:
+            class_summary_lines.append(
+                f"| {query_class} | 0 | 0 | 0.000 | 0.000 |"
+            )
+            continue
+        class_summary_lines.append(
+            f"| {query_class} | {total_samples} | {total_failures} | "
+            f"{(max(class_tempo_p95_vals) if class_tempo_p95_vals else 0.0):.3f} | "
+            f"{(max(class_grafana_p95_vals) if class_grafana_p95_vals else 0.0):.3f} |"
+        )
+
     env_header = {}
     env_path = raw_dir / "environment.json"
     if env_path.exists():
@@ -319,6 +368,12 @@ def main() -> None:
             "",
             f"- Synthetic ramp summary: {synthetic_summary}",
             f"- Live sanity summary: {live_summary}",
+            "",
+            "## Query Class Latency",
+            "",
+            "| Query Class | Samples | Total Probe Failures | Tempo p95 Max (s) | Grafana p95 Max (s) |",
+            "|---|---:|---:|---:|---:|",
+            *class_summary_lines,
             "",
             "## Failure Criteria",
             "",
