@@ -23,6 +23,7 @@ STAGE_FILTER="${TEMPO_STAGE_FILTER:-}"
 TRACE_TARGET_BYTES="${TEMPO_TRACE_TARGET_BYTES:-0}"
 TRACE_SIZE_RAMP_BYTES="${TEMPO_TRACE_SIZE_RAMP_BYTES:-}"
 TRACE_SIZE_RAMP_INDEX=0
+NEXT_TRACE_TARGET_BYTES=""
 TRACE_SPAN_TARGET_BYTES="${TEMPO_TRACE_SPAN_TARGET_BYTES:-8192}"
 TRACE_SPAN_PAUSE_MS="${TEMPO_TRACE_SPAN_PAUSE_MS:-0}"
 TRACE_SPAN_PAUSE_EVERY="${TEMPO_TRACE_SPAN_PAUSE_EVERY:-0}"
@@ -135,15 +136,16 @@ EOF
 
 function next_trace_target_bytes() {
   local fallback="$1"
+  NEXT_TRACE_TARGET_BYTES="$fallback"
   if [[ -z "$TRACE_SIZE_RAMP_BYTES" ]]; then
-    echo "$fallback"
+    NEXT_TRACE_TARGET_BYTES="$fallback"
     return 0
   fi
 
   local -a ramp_values=()
   IFS=',' read -r -a ramp_values <<< "$TRACE_SIZE_RAMP_BYTES"
   if [[ "${#ramp_values[@]}" -eq 0 ]]; then
-    echo "$fallback"
+    NEXT_TRACE_TARGET_BYTES="$fallback"
     return 0
   fi
 
@@ -152,9 +154,9 @@ function next_trace_target_bytes() {
   local candidate="${ramp_values[$idx]}"
   candidate="${candidate//[[:space:]]/}"
   if [[ "$candidate" =~ ^[0-9]+$ ]]; then
-    echo "$candidate"
+    NEXT_TRACE_TARGET_BYTES="$candidate"
   else
-    echo "$fallback"
+    NEXT_TRACE_TARGET_BYTES="$fallback"
   fi
 }
 
@@ -178,7 +180,8 @@ function run_stage() {
 
   for run_index in $(seq 1 "$REPEATS"); do
     local effective_trace_target_bytes
-    effective_trace_target_bytes="$(next_trace_target_bytes "$TRACE_TARGET_BYTES")"
+    next_trace_target_bytes "$TRACE_TARGET_BYTES"
+    effective_trace_target_bytes="$NEXT_TRACE_TARGET_BYTES"
     run_tag="${stage_name}-run${run_index}-$(date +%s)"
     metrics_file="$RAW_DIR/${stage_name}_run${run_index}.json"
     docker_stats_file="$RAW_DIR/${stage_name}_run${run_index}_docker_stats.json"
