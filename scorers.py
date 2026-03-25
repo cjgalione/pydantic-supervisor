@@ -333,6 +333,8 @@ async def answer_accuracy_scorer(output: Any, expected: Any) -> dict[str, Any]:
 
     if answer_type == "contains":
         expected_str = str(expected.get("answer", "")).strip()
+        if not expected_str:
+            return {"name": "Answer Accuracy", "score": None}
         found = expected_str.lower() in response_text.lower()
         return {"name": "Answer Accuracy", "score": 1.0 if found else 0.0}
 

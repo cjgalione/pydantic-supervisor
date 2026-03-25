@@ -32,10 +32,12 @@ from src.helpers import extract_query_from_input
 # Judge client (shared across eval modules)
 # ---------------------------------------------------------------------------
 
-judge_client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    default_headers={"x-bt-use-cache": "always"},
-)
+def get_judge_client() -> OpenAI:
+    """Build a judge client from current environment variables."""
+    return OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        default_headers={"x-bt-use-cache": "always"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +62,7 @@ def parse_with_gateway_metadata(
     *, model: str, input_data: list[dict[str, Any]], text_format: Any
 ) -> tuple[Any, dict[str, str]]:
     """Parse a Responses API call while preserving gateway response headers."""
-    raw_response = judge_client.responses.with_raw_response.parse(
+    raw_response = get_judge_client().responses.with_raw_response.parse(
         model=model,
         input=input_data,
         text_format=text_format,

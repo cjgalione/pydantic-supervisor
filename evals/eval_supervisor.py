@@ -1,5 +1,6 @@
 """Supervisor evaluation for the PydanticAI implementation."""
 
+import inspect
 import json
 import os
 import re
@@ -578,7 +579,10 @@ def _register_eval():
             return await step_efficiency_scorer(output)
 
         try:
-            return published_step_efficiency_score(output=output)
+            result = published_step_efficiency_score(output=output)
+            if inspect.isawaitable(result):
+                return await result
+            return result
         except Exception as exc:
             fallback_score = await step_efficiency_scorer(output)
             return {
