@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -212,6 +213,21 @@ def _attrs_size_bytes(attrs: dict[str, Any]) -> int:
     return len(json.dumps(attrs, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+def _search_terms(text: str, *, limit: int = 24) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in re.findall(r"[a-zA-Z0-9_]+", text.lower()):
+        if len(term) < 3:
+            continue
+        if term in seen:
+            continue
+        seen.add(term)
+        out.append(term)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _base_turn_attributes(
     *,
     step: int,
@@ -223,7 +239,7 @@ def _base_turn_attributes(
 ) -> dict[str, Any]:
     tool_name = tool_names[step % len(tool_names)] if tool_names else "delegate_to_research_agent"
     has_error = (step % 29) == 0 and step > 0
-    return {
+    attrs = {
         "bt.span.type": "llm",
         "bt.trace.component": "pydantic-supervisor",
         "bt.trace.turn_index": step,
@@ -249,6 +265,11 @@ def _base_turn_attributes(
         "bt.error.retriable": bool(has_error and step % 2 == 0),
         "bt.turn.synthetic_seed": _seed_segment(seed, step=step, slot=0, target_chars=128),
     }
+    terms = _search_terms(f"{query} {final_output} {tool_name}", limit=24)
+    for idx, term in enumerate(terms):
+        attrs[f"bt.search.term.{idx:02d}"] = term
+    attrs["bt.search.term_count"] = len(terms)
+    return attrs
 
 
 def _expanded_turn_attributes(

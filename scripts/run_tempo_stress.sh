@@ -33,17 +33,49 @@ OTEL_BSP_MAX_QUEUE_SIZE="${TEMPO_OTEL_BSP_MAX_QUEUE_SIZE:-8192}"
 OTEL_BSP_MAX_EXPORT_BATCH_SIZE="${TEMPO_OTEL_BSP_MAX_EXPORT_BATCH_SIZE:-128}"
 OTEL_BSP_SCHEDULE_DELAY="${TEMPO_OTEL_BSP_SCHEDULE_DELAY:-500}"
 OTEL_BSP_EXPORT_TIMEOUT="${TEMPO_OTEL_BSP_EXPORT_TIMEOUT:-30000}"
+TEMPO_INGEST_RATE_LIMIT_BYTES="${TEMPO_INGEST_RATE_LIMIT_BYTES:-5000000}"
+TEMPO_INGEST_BURST_SIZE_BYTES="${TEMPO_INGEST_BURST_SIZE_BYTES:-20000000}"
+TEMPO_SEARCH_DURATION_SLO_SECONDS="${TEMPO_SEARCH_DURATION_SLO_SECONDS:-30}"
+TEMPO_SEARCH_THROUGHPUT_BYTES_SLO="${TEMPO_SEARCH_THROUGHPUT_BYTES_SLO:-1073741824}"
+TEMPO_CONFIG_TEMPLATE="$ROOT_DIR/infra/tempo/tempo.dynamic.yaml.tpl"
+TEMPO_CONFIG_RENDERED="$ROOT_DIR/infra/tempo/tempo.generated.yaml"
 
 function json_escape() {
   python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
 }
 
 function compose_up_wait() {
+  export TEMPO_CONFIG_PATH="$TEMPO_CONFIG_RENDERED"
   if command -v docker-compose >/dev/null 2>&1; then
     docker-compose -f "$COMPOSE_FILE" up -d
     return 0
   fi
   docker compose -f "$COMPOSE_FILE" up -d --wait
+}
+
+function render_tempo_config() {
+  if [[ ! -f "$TEMPO_CONFIG_TEMPLATE" ]]; then
+    cp "$ROOT_DIR/infra/tempo/tempo.yaml" "$TEMPO_CONFIG_RENDERED"
+    return 0
+  fi
+
+python3 - "$TEMPO_CONFIG_TEMPLATE" "$TEMPO_CONFIG_RENDERED" <<'PY'
+import os
+import pathlib
+import sys
+
+template = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+rendered = template
+for key in (
+    "TEMPO_INGEST_RATE_LIMIT_BYTES",
+    "TEMPO_INGEST_BURST_SIZE_BYTES",
+    "TEMPO_SEARCH_DURATION_SLO_SECONDS",
+    "TEMPO_SEARCH_THROUGHPUT_BYTES_SLO",
+):
+    rendered = rendered.replace(f"__{key}__", str(os.environ[key]))
+
+pathlib.Path(sys.argv[2]).write_text(rendered, encoding="utf-8")
+PY
 }
 
 function compose_ps_q() {
@@ -130,6 +162,11 @@ function capture_environment_header() {
   ,"otel_bsp_max_export_batch_size": $OTEL_BSP_MAX_EXPORT_BATCH_SIZE
   ,"otel_bsp_schedule_delay": $OTEL_BSP_SCHEDULE_DELAY
   ,"otel_bsp_export_timeout": $OTEL_BSP_EXPORT_TIMEOUT
+  ,"tempo_ingest_rate_limit_bytes": $TEMPO_INGEST_RATE_LIMIT_BYTES
+  ,"tempo_ingest_burst_size_bytes": $TEMPO_INGEST_BURST_SIZE_BYTES
+  ,"tempo_search_duration_slo_seconds": $TEMPO_SEARCH_DURATION_SLO_SECONDS
+  ,"tempo_search_throughput_bytes_slo": $TEMPO_SEARCH_THROUGHPUT_BYTES_SLO
+  ,"tempo_config_path": $(echo "$TEMPO_CONFIG_RENDERED" | json_escape)
 }
 EOF
 }
@@ -310,6 +347,8 @@ EOF
 }
 
 echo "==> Starting local Tempo + Grafana + OTel Collector stack"
+echo "==> Tempo limits: ingest_rate=${TEMPO_INGEST_RATE_LIMIT_BYTES}B/s burst=${TEMPO_INGEST_BURST_SIZE_BYTES}B search_slo=${TEMPO_SEARCH_DURATION_SLO_SECONDS}s throughput_slo=${TEMPO_SEARCH_THROUGHPUT_BYTES_SLO}B"
+render_tempo_config
 compose_up_wait
 capture_environment_header
 

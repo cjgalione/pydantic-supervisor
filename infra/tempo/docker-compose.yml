@@ -3,7 +3,7 @@ services:
     image: grafana/tempo:2.8.2
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     volumes:
-      - ./tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - ${TEMPO_CONFIG_PATH:-./tempo.yaml}:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
       - "3200:3200"
