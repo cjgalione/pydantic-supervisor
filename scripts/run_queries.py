@@ -463,6 +463,28 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         output_path.write_text(json.dumps(result_payload, indent=2, ensure_ascii=False) + "\n")
         print(f"Wrote metrics output to {output_path}")
 
+    if args.trace_manifest_output:
+        manifest_path = Path(args.trace_manifest_output)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        emitted_sorted = sorted(
+            emitted_traces,
+            key=lambda item: int(item.get("emitted_at_unix_ms", 0) or 0),
+        )
+        manifest_payload = {
+            "trace_run_tag": args.trace_run_tag,
+            "trace_backend": get_trace_backend(),
+            "run_started_at": run_started_at.isoformat(),
+            "run_finished_at": run_finished_at.isoformat(),
+            "emitted_trace_count": len(emitted_sorted),
+            "latest_emitted_at_unix_ms": max(
+                (int(item.get("emitted_at_unix_ms", 0) or 0) for item in emitted_sorted),
+                default=0,
+            ),
+            "traces": emitted_sorted,
+        }
+        manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False) + "\n")
+        print(f"Wrote trace manifest to {manifest_path}")
+
     if args.fail_on_error and failures > 0:
         raise SystemExit(1)
 
@@ -570,6 +592,11 @@ def main() -> None:
         "--metrics-output",
         default=None,
         help="Optional path to write a JSON run summary for aggregation.",
+    )
+    parser.add_argument(
+        "--trace-manifest-output",
+        default=None,
+        help="Optional path to write emitted trace IDs/timestamps for freshness probes.",
     )
     parser.add_argument(
         "--trace-target-bytes",

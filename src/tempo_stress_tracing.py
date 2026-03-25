@@ -236,6 +236,7 @@ def _base_turn_attributes(
     final_output: str,
     tool_names: list[str],
     seed: str,
+    run_tag: str,
 ) -> dict[str, Any]:
     tool_name = tool_names[step % len(tool_names)] if tool_names else "delegate_to_research_agent"
     has_error = (step % 29) == 0 and step > 0
@@ -264,6 +265,7 @@ def _base_turn_attributes(
         "bt.error.type": "none" if not has_error else "tool_timeout",
         "bt.error.retriable": bool(has_error and step % 2 == 0),
         "bt.turn.synthetic_seed": _seed_segment(seed, step=step, slot=0, target_chars=128),
+        "stress.run_tag": run_tag,
     }
     terms = _search_terms(f"{query} {final_output} {tool_name}", limit=24)
     for idx, term in enumerate(terms):
@@ -350,7 +352,7 @@ def emit_supervisor_trace(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if _tracer is None:
-        return {"trace_id": "", "synthetic_spans": 0, "payload_bytes": 0}
+        return {"trace_id": "", "synthetic_spans": 0, "payload_bytes": 0, "emitted_at_unix_ms": 0}
 
     profile = _normalize_payload_profile(payload_profile)
     profile_cfg = _payload_profile_config[profile]
@@ -368,6 +370,7 @@ def emit_supervisor_trace(
     )
 
     tool_names = _iter_tool_names(messages)
+    run_tag = str((metadata or {}).get("trace_run_tag") or os.environ.get("TRACE_RUN_TAG", "adhoc"))
     min_spans = int(profile_cfg["extra_spans"])
     synthetic_spans = max(min_spans, (target_payload_bytes + span_target_bytes - 1) // span_target_bytes)
     root_payload_preview = payload_seed[:4096]
@@ -384,6 +387,7 @@ def emit_supervisor_trace(
         "agent.final_output": final_output[:4096],
         "agent.tool_call_count": len(tool_names),
         "agent.payload_preview": root_payload_preview,
+        "stress.run_tag": run_tag,
     }
     if metadata:
         for key, value in metadata.items():
@@ -426,6 +430,7 @@ def emit_supervisor_trace(
                 final_output=final_output,
                 tool_names=tool_names,
                 seed=payload_seed,
+                run_tag=run_tag,
             )
             turn_attrs = _expanded_turn_attributes(
                 step=idx,
@@ -443,7 +448,10 @@ def emit_supervisor_trace(
     return {
         "trace_id": trace_id,
         "synthetic_spans": synthetic_spans,
-        "payload_bytes": target_payload_bytes,
+        "payload_target_bytes": target_payload_bytes,
+        "payload_bytes": emitted_payload_bytes,
+        "emitted_at_unix_ms": int(time.time() * 1000),
+        "trace_run_tag": run_tag,
     }
 
 

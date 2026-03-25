@@ -59,6 +59,9 @@ def _criteria_failed(row: dict[str, Any]) -> bool:
         return True
     if float(row["tempo_search_probe_p95_seconds"]) > 10.0 or float(row["grafana_search_probe_p95_seconds"]) > 10.0:
         return True
+    if int(row.get("search_probe_samples", 0) or 0) > 0:
+        if not bool(row.get("tempo_fresh_within_slo", True)) or not bool(row.get("grafana_fresh_within_slo", True)):
+            return True
     return False
 
 
@@ -80,6 +83,9 @@ def _failure_reasons(row: dict[str, Any]) -> list[str]:
         reasons.append("search_probe_errors")
     if float(row.get("tempo_search_probe_p95_seconds", 0.0)) > 10.0 or float(row.get("grafana_search_probe_p95_seconds", 0.0)) > 10.0:
         reasons.append("search_probe_latency")
+    if int(row.get("search_probe_samples", 0) or 0) > 0:
+        if not bool(row.get("tempo_fresh_within_slo", True)) or not bool(row.get("grafana_fresh_within_slo", True)):
+            reasons.append("trace_freshness")
     return reasons
 
 
@@ -162,6 +168,12 @@ def main() -> None:
             "grafana_search_probe_failures": int(search_probe.get("grafana_failures", 0) or 0),
             "tempo_search_probe_p95_seconds": float(search_probe.get("tempo_p95_seconds", 0.0) or 0.0),
             "grafana_search_probe_p95_seconds": float(search_probe.get("grafana_p95_seconds", 0.0) or 0.0),
+            "freshness_slo_ms": int(search_probe.get("freshness_slo_ms", 0) or 0),
+            "latest_emitted_at_unix_ms": int(search_probe.get("latest_emitted_at_unix_ms", 0) or 0),
+            "tempo_first_hit_delay_ms": int(search_probe.get("tempo_first_hit_delay_ms", -1) or -1),
+            "grafana_first_hit_delay_ms": int(search_probe.get("grafana_first_hit_delay_ms", -1) or -1),
+            "tempo_fresh_within_slo": bool(search_probe.get("tempo_fresh_within_slo", False)),
+            "grafana_fresh_within_slo": bool(search_probe.get("grafana_fresh_within_slo", False)),
             "export_failures": int(otel_stats.get("export_failures", 0) or 0),
             "failed_spans": int(otel_stats.get("failed_spans", 0) or 0),
             "estimated_retryable_failures": int(otel_stats.get("estimated_retryable_failures", 0) or 0),
@@ -175,6 +187,8 @@ def main() -> None:
             row[f"grafana_{query_class}_probe_failures"] = int(class_payload.get("grafana_failures", 0) or 0)
             row[f"tempo_{query_class}_probe_p95_seconds"] = float(class_payload.get("tempo_p95_seconds", 0.0) or 0.0)
             row[f"grafana_{query_class}_probe_p95_seconds"] = float(class_payload.get("grafana_p95_seconds", 0.0) or 0.0)
+            row[f"tempo_{query_class}_first_hit_delay_ms"] = int(class_payload.get("tempo_first_hit_delay_ms", -1) or -1)
+            row[f"grafana_{query_class}_first_hit_delay_ms"] = int(class_payload.get("grafana_first_hit_delay_ms", -1) or -1)
         row["criteria_failed"] = _criteria_failed(row)
         row["failure_reasons"] = ",".join(_failure_reasons(row))
         rows.append(row)
@@ -206,6 +220,12 @@ def main() -> None:
         "grafana_search_probe_failures",
         "tempo_search_probe_p95_seconds",
         "grafana_search_probe_p95_seconds",
+        "freshness_slo_ms",
+        "latest_emitted_at_unix_ms",
+        "tempo_first_hit_delay_ms",
+        "grafana_first_hit_delay_ms",
+        "tempo_fresh_within_slo",
+        "grafana_fresh_within_slo",
         "export_failures",
         "failed_spans",
         "estimated_retryable_failures",
@@ -222,6 +242,8 @@ def main() -> None:
                 f"grafana_{query_class}_probe_failures",
                 f"tempo_{query_class}_probe_p95_seconds",
                 f"grafana_{query_class}_probe_p95_seconds",
+                f"tempo_{query_class}_first_hit_delay_ms",
+                f"grafana_{query_class}_first_hit_delay_ms",
             ]
         )
 
@@ -312,15 +334,29 @@ def main() -> None:
             + int(row.get(f"grafana_{query_class}_probe_failures", 0) or 0)
             for row in rows
         )
+        tempo_delay_vals = [
+            int(row.get(f"tempo_{query_class}_first_hit_delay_ms", -1) or -1)
+            for row in rows
+            if int(row.get(f"tempo_{query_class}_first_hit_delay_ms", -1) or -1) >= 0
+        ]
+        grafana_delay_vals = [
+            int(row.get(f"grafana_{query_class}_first_hit_delay_ms", -1) or -1)
+            for row in rows
+            if int(row.get(f"grafana_{query_class}_first_hit_delay_ms", -1) or -1) >= 0
+        ]
         if total_samples == 0:
             class_summary_lines.append(
-                f"| {query_class} | 0 | 0 | 0.000 | 0.000 |"
+                f"| {query_class} | 0 | 0 | 0.000 | 0.000 | n/a | n/a |"
             )
             continue
         class_summary_lines.append(
+            # Delay is based on first successful non-empty search response after latest trace emit.
+            # Use n/a if no hit was observed.
             f"| {query_class} | {total_samples} | {total_failures} | "
             f"{(max(class_tempo_p95_vals) if class_tempo_p95_vals else 0.0):.3f} | "
-            f"{(max(class_grafana_p95_vals) if class_grafana_p95_vals else 0.0):.3f} |"
+            f"{(max(class_grafana_p95_vals) if class_grafana_p95_vals else 0.0):.3f} | "
+            f"{(str(min(tempo_delay_vals)) if tempo_delay_vals else 'n/a')} | "
+            f"{(str(min(grafana_delay_vals)) if grafana_delay_vals else 'n/a')} |"
         )
 
     env_header = {}
@@ -371,8 +407,8 @@ def main() -> None:
             "",
             "## Query Class Latency",
             "",
-            "| Query Class | Samples | Total Probe Failures | Tempo p95 Max (s) | Grafana p95 Max (s) |",
-            "|---|---:|---:|---:|---:|",
+            "| Query Class | Samples | Total Probe Failures | Tempo p95 Max (s) | Grafana p95 Max (s) | Tempo first-hit delay min (ms) | Grafana first-hit delay min (ms) |",
+            "|---|---:|---:|---:|---:|---:|---:|",
             *class_summary_lines,
             "",
             "## Failure Criteria",
@@ -383,6 +419,7 @@ def main() -> None:
             "- p95 question latency > 10s",
             "- Tempo or Grafana query endpoint returned >= 500",
             "- Tempo or Grafana query probe took > 10s",
+            "- Latest emitted trace was not queryable within freshness SLO",
             "",
             "## Notes",
             "",
