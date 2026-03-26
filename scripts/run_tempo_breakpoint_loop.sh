@@ -26,6 +26,7 @@ TEMPO_SEARCH_THROUGHPUT_BYTES_SLO="${TEMPO_SEARCH_THROUGHPUT_BYTES_SLO:-42949672
 
 # Breakpoint loop settings
 START_SPAN_TARGET_BYTES="${TEMPO_BREAKPOINT_START_SPAN_TARGET_BYTES:-10485760}" # 10 MiB
+SPAN_SEQUENCE_BYTES="${TEMPO_BREAKPOINT_SPAN_SEQUENCE_BYTES:-}"
 SPAN_GROWTH_FACTOR="${TEMPO_BREAKPOINT_SPAN_GROWTH_FACTOR:-2}"
 STEP_INTERVAL_SECONDS="${TEMPO_BREAKPOINT_STEP_INTERVAL_SECONDS:-60}"
 MAX_STEPS="${TEMPO_BREAKPOINT_MAX_STEPS:-12}"
@@ -44,6 +45,24 @@ TRACE_SPAN_PAUSE_MS="${TEMPO_TRACE_SPAN_PAUSE_MS:-10}"
 TRACE_SPAN_PAUSE_EVERY="${TEMPO_TRACE_SPAN_PAUSE_EVERY:-100}"
 TRACE_SPAN_ATTRIBUTE_LIMIT="${TRACE_SPAN_ATTRIBUTE_LIMIT:-50000}"
 TRACE_SPAN_ATTRIBUTE_VALUE_LIMIT="${TRACE_SPAN_ATTRIBUTE_VALUE_LIMIT:-131072}"
+
+SPAN_SEQUENCE_MODE=0
+declare -a SPAN_SEQUENCE_VALUES=()
+if [[ -n "$SPAN_SEQUENCE_BYTES" ]]; then
+  IFS=',' read -r -a _raw_span_sequence <<< "$SPAN_SEQUENCE_BYTES"
+  for candidate in "${_raw_span_sequence[@]}"; do
+    candidate="${candidate//[[:space:]]/}"
+    if [[ "$candidate" =~ ^[0-9]+$ ]] && [[ "$candidate" -gt 0 ]]; then
+      SPAN_SEQUENCE_VALUES+=("$candidate")
+    fi
+  done
+  if [[ "${#SPAN_SEQUENCE_VALUES[@]}" -gt 0 ]]; then
+    SPAN_SEQUENCE_MODE=1
+    if [[ "$MAX_STEPS" -gt "${#SPAN_SEQUENCE_VALUES[@]}" ]]; then
+      MAX_STEPS="${#SPAN_SEQUENCE_VALUES[@]}"
+    fi
+  fi
+fi
 
 function compose_up_wait() {
   export TEMPO_CONFIG_PATH="$TEMPO_CONFIG_RENDERED"
@@ -182,12 +201,20 @@ wait_for_http_200 "Tempo search endpoint" "http://localhost:3200/api/search?limi
 wait_for_http_200 "Grafana Tempo datasource proxy" "http://localhost:3000/api/datasources/proxy/uid/tempo/api/search?limit=20" "admin:admin"
 
 echo "==> Starting breakpoint loop"
-echo "==> start_span_target_bytes=${START_SPAN_TARGET_BYTES} spans_per_trace=${SPANS_PER_TRACE} min_trace_target_bytes=${MIN_TRACE_TARGET_BYTES} max_steps=${MAX_STEPS}"
+if [[ "$SPAN_SEQUENCE_MODE" -eq 1 ]]; then
+  echo "==> span_sequence_bytes=${SPAN_SEQUENCE_VALUES[*]} spans_per_trace=${SPANS_PER_TRACE} min_trace_target_bytes=${MIN_TRACE_TARGET_BYTES} max_steps=${MAX_STEPS}"
+else
+  echo "==> start_span_target_bytes=${START_SPAN_TARGET_BYTES} spans_per_trace=${SPANS_PER_TRACE} min_trace_target_bytes=${MIN_TRACE_TARGET_BYTES} max_steps=${MAX_STEPS}"
+fi
 
 span_target_bytes="$START_SPAN_TARGET_BYTES"
 for step in $(seq 1 "$MAX_STEPS"); do
   step_started="$(date +%s)"
   run_tag="breakpoint-step${step}-$(date +%s)"
+
+  if [[ "$SPAN_SEQUENCE_MODE" -eq 1 ]]; then
+    span_target_bytes="${SPAN_SEQUENCE_VALUES[$((step - 1))]}"
+  fi
 
   computed_trace_target=$((span_target_bytes * SPANS_PER_TRACE))
   trace_target_bytes="$computed_trace_target"
@@ -297,7 +324,9 @@ PY
     sleep "$sleep_seconds"
   fi
 
-  span_target_bytes=$(( span_target_bytes * SPAN_GROWTH_FACTOR ))
+  if [[ "$SPAN_SEQUENCE_MODE" -ne 1 ]]; then
+    span_target_bytes=$(( span_target_bytes * SPAN_GROWTH_FACTOR ))
+  fi
 done
 
 echo "==> Breakpoint loop finished"
