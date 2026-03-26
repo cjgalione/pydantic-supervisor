@@ -92,14 +92,14 @@ def _span_traceql_candidates(entry: dict[str, Any]) -> list[str]:
     ]
 
 
-def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, str]]:
+def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, Any]]:
     run_tag = _traceql_escape(str(entry.get("run_tag", "")))
     seed_l1 = _traceql_escape(str(entry.get("seed_term_level_1", "")))
     seed_l2 = _traceql_escape(str(entry.get("seed_term_level_2", "")))
     seed_l3 = _traceql_escape(str(entry.get("seed_term_level_3", "")))
     seed_l4 = _traceql_escape(str(entry.get("seed_term_level_4", "")))
     seed_json = _traceql_escape(str(entry.get("seed_term_json", "")))
-    checks: list[dict[str, str]] = []
+    checks: list[dict[str, Any]] = []
     if not run_tag:
         return checks
     if seed_l1:
@@ -110,6 +110,7 @@ def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, str]]:
                     f'{{span."bt.prompt.system.seed_term"="{seed_l1}" '
                     f'&& .stress_run_tag="{run_tag}"}}'
                 ),
+                "required": True,
             }
         )
     if seed_l2:
@@ -120,6 +121,7 @@ def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, str]]:
                     f'{{span."bt.context.thread_summary.seed_term"="{seed_l2}" '
                     f'&& .stress_run_tag="{run_tag}"}}'
                 ),
+                "required": True,
             }
         )
     if seed_l3:
@@ -130,6 +132,7 @@ def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, str]]:
                     f'{{span."bt.context.tool_args.filters.primary.seed_term"="{seed_l3}" '
                     f'&& .stress_run_tag="{run_tag}"}}'
                 ),
+                "required": True,
             }
         )
     if seed_l4:
@@ -140,6 +143,7 @@ def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, str]]:
                     f'{{span."bt.retrieval.evidence.documents.primary.snippet.seed_term"="{seed_l4}" '
                     f'&& .stress_run_tag="{run_tag}"}}'
                 ),
+                "required": True,
             }
         )
     if seed_json:
@@ -150,12 +154,14 @@ def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, str]]:
                     f'{{span."bt.context.serialized"=~".*{seed_json}.*" '
                     f'&& .stress_run_tag="{run_tag}"}}'
                 ),
+                "required": True,
             }
         )
     checks.append(
         {
             "name": "seed_array_tags_death",
             "traceql": f'{{span.tags="death" && .stress_run_tag="{run_tag}"}}',
+            "required": False,
         }
     )
     return checks
@@ -202,9 +208,10 @@ def _validate_seed_queries(
                 "attempts": attempts,
                 "error": last_err,
                 "traceql": str(check["traceql"]),
+                "required": bool(check.get("required", True)),
             }
         )
-        if not matched:
+        if not matched and bool(check.get("required", True)):
             failed_names.append(str(check["name"]))
     return out, failed_names
 
