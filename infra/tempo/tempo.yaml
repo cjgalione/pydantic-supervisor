@@ -1,7 +1,10 @@
 server:
   http_listen_port: 3200
+  grpc_server_max_recv_msg_size: 2147483647
+  grpc_server_max_send_msg_size: 2147483647
 
 distributor:
+  max_attribute_bytes: 104857600
   receivers:
     otlp:
       protocols:
@@ -27,6 +30,12 @@ query_frontend:
   search:
     duration_slo: 30s
     throughput_bytes_slo: 1073741824
+
+querier:
+  frontend_worker:
+    grpc_client_config:
+      max_recv_msg_size: 2147483647
+      max_send_msg_size: 2147483647
 
 metrics_generator:
   registry:
