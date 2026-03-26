@@ -265,7 +265,7 @@ def _base_turn_attributes(
         "bt.error.type": "none" if not has_error else "tool_timeout",
         "bt.error.retriable": bool(has_error and step % 2 == 0),
         "bt.turn.synthetic_seed": _seed_segment(seed, step=step, slot=0, target_chars=128),
-        "stress.run_tag": run_tag,
+        "stress_run_tag": run_tag,
     }
     terms = _search_terms(f"{query} {final_output} {tool_name}", limit=24)
     for idx, term in enumerate(terms):
@@ -387,7 +387,7 @@ def emit_supervisor_trace(
         "agent.final_output": final_output[:4096],
         "agent.tool_call_count": len(tool_names),
         "agent.payload_preview": root_payload_preview,
-        "stress.run_tag": run_tag,
+        "stress_run_tag": run_tag,
     }
     if metadata:
         for key, value in metadata.items():
