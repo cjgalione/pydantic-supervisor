@@ -50,10 +50,10 @@ function json_escape() {
 function compose_up_wait() {
   export TEMPO_CONFIG_PATH="$TEMPO_CONFIG_RENDERED"
   if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose -f "$COMPOSE_FILE" up -d
+    docker-compose -f "$COMPOSE_FILE" up -d --force-recreate
     return 0
   fi
-  docker compose -f "$COMPOSE_FILE" up -d --wait
+  docker compose -f "$COMPOSE_FILE" up -d --wait --force-recreate
 }
 
 function render_tempo_config() {
