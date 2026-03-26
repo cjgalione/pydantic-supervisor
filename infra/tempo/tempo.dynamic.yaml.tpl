@@ -17,6 +17,11 @@ distributor:
 ingester:
   max_block_duration: 5m
 
+ingester_client:
+  grpc_client_config:
+    max_recv_msg_size: __TEMPO_INTERNAL_GRPC_MAX_MSG_SIZE__
+    max_send_msg_size: __TEMPO_INTERNAL_GRPC_MAX_MSG_SIZE__
+
 compactor:
   compaction:
     block_retention: 24h
