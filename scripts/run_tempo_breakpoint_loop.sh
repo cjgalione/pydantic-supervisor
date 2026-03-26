@@ -53,21 +53,29 @@ function compose_up_wait() {
 }
 
 function render_tempo_config() {
-  python3 - "$TEMPO_CONFIG_TEMPLATE" "$TEMPO_CONFIG_RENDERED" <<'PY'
-import os
+  python3 - \
+    "$TEMPO_CONFIG_TEMPLATE" \
+    "$TEMPO_CONFIG_RENDERED" \
+    "$TEMPO_INGEST_RATE_LIMIT_BYTES" \
+    "$TEMPO_INGEST_BURST_SIZE_BYTES" \
+    "$TEMPO_MAX_BYTES_PER_TRACE" \
+    "$TEMPO_SEARCH_DURATION_SLO_SECONDS" \
+    "$TEMPO_SEARCH_THROUGHPUT_BYTES_SLO" <<'PY'
 import pathlib
 import sys
 
 template = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 rendered = template
-for key in (
+keys = (
     "TEMPO_INGEST_RATE_LIMIT_BYTES",
     "TEMPO_INGEST_BURST_SIZE_BYTES",
     "TEMPO_MAX_BYTES_PER_TRACE",
     "TEMPO_SEARCH_DURATION_SLO_SECONDS",
     "TEMPO_SEARCH_THROUGHPUT_BYTES_SLO",
-):
-    rendered = rendered.replace(f"__{key}__", str(os.environ[key]))
+)
+values = sys.argv[3:3 + len(keys)]
+for key, value in zip(keys, values):
+    rendered = rendered.replace(f"__{key}__", str(value))
 pathlib.Path(sys.argv[2]).write_text(rendered, encoding="utf-8")
 PY
 }
