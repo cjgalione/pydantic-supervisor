@@ -37,6 +37,7 @@ OTEL_BSP_SCHEDULE_DELAY="${TEMPO_OTEL_BSP_SCHEDULE_DELAY:-500}"
 OTEL_BSP_EXPORT_TIMEOUT="${TEMPO_OTEL_BSP_EXPORT_TIMEOUT:-30000}"
 TEMPO_INGEST_RATE_LIMIT_BYTES="${TEMPO_INGEST_RATE_LIMIT_BYTES:-5000000}"
 TEMPO_INGEST_BURST_SIZE_BYTES="${TEMPO_INGEST_BURST_SIZE_BYTES:-20000000}"
+TEMPO_MAX_BYTES_PER_TRACE="${TEMPO_MAX_BYTES_PER_TRACE:-10737418240}"
 TEMPO_SEARCH_DURATION_SLO_SECONDS="${TEMPO_SEARCH_DURATION_SLO_SECONDS:-30}"
 TEMPO_SEARCH_THROUGHPUT_BYTES_SLO="${TEMPO_SEARCH_THROUGHPUT_BYTES_SLO:-1073741824}"
 TEMPO_CONFIG_TEMPLATE="$ROOT_DIR/infra/tempo/tempo.dynamic.yaml.tpl"
@@ -71,6 +72,7 @@ rendered = template
 for key in (
     "TEMPO_INGEST_RATE_LIMIT_BYTES",
     "TEMPO_INGEST_BURST_SIZE_BYTES",
+    "TEMPO_MAX_BYTES_PER_TRACE",
     "TEMPO_SEARCH_DURATION_SLO_SECONDS",
     "TEMPO_SEARCH_THROUGHPUT_BYTES_SLO",
 ):
@@ -319,6 +321,7 @@ function capture_environment_header() {
   ,"otel_bsp_export_timeout": $OTEL_BSP_EXPORT_TIMEOUT
   ,"tempo_ingest_rate_limit_bytes": $TEMPO_INGEST_RATE_LIMIT_BYTES
   ,"tempo_ingest_burst_size_bytes": $TEMPO_INGEST_BURST_SIZE_BYTES
+  ,"tempo_max_bytes_per_trace": $TEMPO_MAX_BYTES_PER_TRACE
   ,"tempo_search_duration_slo_seconds": $TEMPO_SEARCH_DURATION_SLO_SECONDS
   ,"tempo_search_throughput_bytes_slo": $TEMPO_SEARCH_THROUGHPUT_BYTES_SLO
   ,"tempo_config_path": $(echo "$TEMPO_CONFIG_RENDERED" | json_escape)
@@ -600,7 +603,7 @@ EOF
 }
 
 echo "==> Starting local Tempo + Grafana + OTel Collector stack"
-echo "==> Tempo limits: ingest_rate=${TEMPO_INGEST_RATE_LIMIT_BYTES}B/s burst=${TEMPO_INGEST_BURST_SIZE_BYTES}B search_slo=${TEMPO_SEARCH_DURATION_SLO_SECONDS}s throughput_slo=${TEMPO_SEARCH_THROUGHPUT_BYTES_SLO}B"
+echo "==> Tempo limits: ingest_rate=${TEMPO_INGEST_RATE_LIMIT_BYTES}B/s burst=${TEMPO_INGEST_BURST_SIZE_BYTES}B max_trace_bytes=${TEMPO_MAX_BYTES_PER_TRACE} search_slo=${TEMPO_SEARCH_DURATION_SLO_SECONDS}s throughput_slo=${TEMPO_SEARCH_THROUGHPUT_BYTES_SLO}B"
 render_tempo_config
 compose_up_wait
 capture_environment_header

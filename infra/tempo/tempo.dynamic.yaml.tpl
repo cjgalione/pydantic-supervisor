@@ -38,3 +38,5 @@ overrides:
     ingestion:
       burst_size_bytes: __TEMPO_INGEST_BURST_SIZE_BYTES__
       rate_limit_bytes: __TEMPO_INGEST_RATE_LIMIT_BYTES__
+    global:
+      max_bytes_per_trace: __TEMPO_MAX_BYTES_PER_TRACE__

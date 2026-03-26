@@ -38,3 +38,5 @@ overrides:
     ingestion:
       burst_size_bytes: 20000000
       rate_limit_bytes: 5000000
+    global:
+      max_bytes_per_trace: 10737418240

@@ -212,8 +212,19 @@ def _resolve_fragment_bytes() -> int:
         parsed = int(raw)
     except ValueError:
         parsed = 8_192
-    # Permit large span payload experiments up to 6 MiB per span.
-    return min(max(256, parsed), 6 * 1024 * 1024)
+    # Permit large span payload experiments up to 64 MiB per span.
+    return min(max(256, parsed), 64 * 1024 * 1024)
+
+
+def _resolve_synthetic_min_spans(default_value: int) -> int:
+    raw = str(os.environ.get("TRACE_SYNTHETIC_MIN_SPANS", "")).strip()
+    if not raw:
+        return max(1, default_value)
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return max(1, default_value)
+    return max(1, parsed)
 
 
 def _attrs_size_bytes(attrs: dict[str, Any]) -> int:
@@ -392,7 +403,7 @@ def emit_supervisor_trace(
 
     tool_names = _iter_tool_names(messages)
     run_tag = str((metadata or {}).get("trace_run_tag") or os.environ.get("TRACE_RUN_TAG", "adhoc"))
-    min_spans = int(profile_cfg["extra_spans"])
+    min_spans = _resolve_synthetic_min_spans(int(profile_cfg["extra_spans"]))
     synthetic_spans = max(min_spans, (target_payload_bytes + span_target_bytes - 1) // span_target_bytes)
     root_payload_preview = payload_seed[:4096]
 
@@ -441,9 +452,9 @@ def emit_supervisor_trace(
             if pause_ms > 0 and pause_every > 0 and idx > 0 and idx % pause_every == 0:
                 time.sleep(pause_ms / 1000.0)
             remaining_bytes = max(0, target_payload_bytes - emitted_payload_bytes)
-            stage_target_bytes = span_target_bytes if remaining_bytes <= 0 else min(
-                span_target_bytes, remaining_bytes
-            )
+            # Keep post-target spans lightweight when synthetic span count is
+            # forced higher than required by payload target.
+            stage_target_bytes = min(span_target_bytes, remaining_bytes) if remaining_bytes > 0 else 1024
             turn_attrs = _base_turn_attributes(
                 step=idx,
                 synthetic_spans=synthetic_spans,
