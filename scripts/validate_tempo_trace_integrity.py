@@ -92,6 +92,153 @@ def _span_traceql_candidates(entry: dict[str, Any]) -> list[str]:
     ]
 
 
+def _seed_traceql_checks(entry: dict[str, Any]) -> list[dict[str, str]]:
+    run_tag = _traceql_escape(str(entry.get("run_tag", "")))
+    seed_l1 = _traceql_escape(str(entry.get("seed_term_level_1", "")))
+    seed_l2 = _traceql_escape(str(entry.get("seed_term_level_2", "")))
+    seed_l3 = _traceql_escape(str(entry.get("seed_term_level_3", "")))
+    seed_l4 = _traceql_escape(str(entry.get("seed_term_level_4", "")))
+    seed_json = _traceql_escape(str(entry.get("seed_term_json", "")))
+    checks: list[dict[str, str]] = []
+    if not run_tag:
+        return checks
+    if seed_l1:
+        checks.append(
+            {
+                "name": "seed_level_1",
+                "traceql": (
+                    f'{{span."bt.prompt.system.seed_term"="{seed_l1}" '
+                    f'&& .stress_run_tag="{run_tag}"}}'
+                ),
+            }
+        )
+    if seed_l2:
+        checks.append(
+            {
+                "name": "seed_level_2",
+                "traceql": (
+                    f'{{span."bt.context.thread_summary.seed_term"="{seed_l2}" '
+                    f'&& .stress_run_tag="{run_tag}"}}'
+                ),
+            }
+        )
+    if seed_l3:
+        checks.append(
+            {
+                "name": "seed_level_3",
+                "traceql": (
+                    f'{{span."bt.context.tool_args.filters.primary.seed_term"="{seed_l3}" '
+                    f'&& .stress_run_tag="{run_tag}"}}'
+                ),
+            }
+        )
+    if seed_l4:
+        checks.append(
+            {
+                "name": "seed_level_4",
+                "traceql": (
+                    f'{{span."bt.retrieval.evidence.documents.primary.snippet.seed_term"="{seed_l4}" '
+                    f'&& .stress_run_tag="{run_tag}"}}'
+                ),
+            }
+        )
+    if seed_json:
+        checks.append(
+            {
+                "name": "seed_nested_json",
+                "traceql": (
+                    f'{{span."bt.context.serialized"=~".*{seed_json}.*" '
+                    f'&& .stress_run_tag="{run_tag}"}}'
+                ),
+            }
+        )
+    checks.append(
+        {
+            "name": "seed_array_tags_death",
+            "traceql": f'{{span.tags="death" && .stress_run_tag="{run_tag}"}}',
+        }
+    )
+    return checks
+
+
+def _validate_seed_queries(
+    *,
+    trace_id: str,
+    entry: dict[str, Any],
+    tempo_base_url: str,
+    query_timeout_seconds: float,
+    poll_interval_seconds: float,
+    http_timeout_seconds: float,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    checks = _seed_traceql_checks(entry)
+    if not checks:
+        return [], []
+    out: list[dict[str, Any]] = []
+    failed_names: list[str] = []
+    deadline_ms = int(time.time() * 1000) + int(query_timeout_seconds * 1000)
+    for check in checks:
+        last_code = 0
+        last_err = ""
+        matched = False
+        attempts = 0
+        while int(time.time() * 1000) <= deadline_ms:
+            attempts += 1
+            last_code, trace_ids, tempo_err = _query_traceql_search(
+                base_url=tempo_base_url,
+                traceql=str(check["traceql"]),
+                http_timeout_seconds=http_timeout_seconds,
+            )
+            if last_code == 200 and trace_id in trace_ids:
+                matched = True
+                last_err = ""
+                break
+            last_err = tempo_err
+            time.sleep(poll_interval_seconds)
+        out.append(
+            {
+                "name": str(check["name"]),
+                "matched": matched,
+                "http_code": last_code,
+                "attempts": attempts,
+                "error": last_err,
+                "traceql": str(check["traceql"]),
+            }
+        )
+        if not matched:
+            failed_names.append(str(check["name"]))
+    return out, failed_names
+
+
+def _attach_seed_query_results(
+    *,
+    result: dict[str, Any],
+    trace_id: str,
+    expected_entries: list[dict[str, Any]],
+    tempo_base_url: str,
+    query_timeout_seconds: float,
+    poll_interval_seconds: float,
+    http_timeout_seconds: float,
+) -> dict[str, Any]:
+    checks, failed_names = _validate_seed_queries(
+        trace_id=trace_id,
+        entry=expected_entries[0],
+        tempo_base_url=tempo_base_url,
+        query_timeout_seconds=query_timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        http_timeout_seconds=http_timeout_seconds,
+    )
+    result["seed_query_checks"] = checks
+    result["seed_query_failure_count"] = len(failed_names)
+    if failed_names:
+        result["seed_query_failed_names"] = failed_names
+        if result.get("ok"):
+            result["ok"] = False
+            result["failure_invariant"] = "seed_query_not_match"
+    else:
+        result["seed_query_failed_names"] = []
+    return result
+
+
 def _verify_trace_via_span_search(
     *,
     trace_id: str,
@@ -358,7 +505,7 @@ def _verify_trace(
     http_timeout_seconds: float,
 ) -> dict[str, Any]:
     if validation_mode == "span_search":
-        return _verify_trace_via_span_search(
+        result = _verify_trace_via_span_search(
             trace_id=trace_id,
             expected_entries=expected_entries,
             tempo_base_url=tempo_base_url,
@@ -368,12 +515,22 @@ def _verify_trace(
             poll_interval_seconds=poll_interval_seconds,
             http_timeout_seconds=http_timeout_seconds,
         )
-    return _verify_trace_via_trace_fetch(
+    else:
+        result = _verify_trace_via_trace_fetch(
+            trace_id=trace_id,
+            expected_entries=expected_entries,
+            tempo_base_url=tempo_base_url,
+            grafana_base_url=grafana_base_url,
+            grafana_auth=grafana_auth,
+            query_timeout_seconds=query_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            http_timeout_seconds=http_timeout_seconds,
+        )
+    return _attach_seed_query_results(
+        result=result,
         trace_id=trace_id,
         expected_entries=expected_entries,
         tempo_base_url=tempo_base_url,
-        grafana_base_url=grafana_base_url,
-        grafana_auth=grafana_auth,
         query_timeout_seconds=query_timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,
         http_timeout_seconds=http_timeout_seconds,

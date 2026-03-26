@@ -140,6 +140,8 @@ queries = {
     "span_name": f'{{name="hardmode_span_0000" && .stress_run_tag="{run_tag}"}}',
     "svc_field": f'{{resource.service.name="pydantic-supervisor-hardmode" && .stress_run_tag="{run_tag}"}}',
     "dot_svc_field": f'{{.service.name="pydantic-supervisor-hardmode" && .stress_run_tag="{run_tag}"}}',
+    "seed_depth_field": f'{{span."bt.context.tool_args.filters.primary.seed_term"=~".*death_l3_.*" && .stress_run_tag="{run_tag}"}}',
+    "seed_array_tag": f'{{span.tags="death" && .stress_run_tag="{run_tag}"}}',
 }
 
 summary = {"run_tag": run_tag, "classes": {}}

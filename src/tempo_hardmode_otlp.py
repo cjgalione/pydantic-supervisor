@@ -35,6 +35,7 @@ DEFAULT_SPAN_SIZE_CLASSES = [
 
 DEFAULT_CHUNK_SIZE_BYTES = 1 * 1024 * 1024
 PAYLOAD_CHUNK_KEY_PREFIX = "hardmode.payload.chunk."
+PAYLOAD_TEXT_FORMAT_VERSION = "v2"
 
 
 def now_unix_ms() -> int:
@@ -61,10 +62,23 @@ def span_id_for(run_tag: str, stage_name: str, trace_index: int, span_index: int
 def deterministic_payload_text(size_bytes: int, seed: str) -> str:
     if size_bytes <= 0:
         return ""
-    # ASCII-only deterministic filler so bytes == chars in UTF-8.
-    token = hashlib.sha256(f"{seed}:{size_bytes}".encode("utf-8")).hexdigest()
-    repeats = (size_bytes + len(token) - 1) // len(token)
-    return (token * repeats)[:size_bytes]
+    # ASCII-only deterministic prose so bytes == chars in UTF-8, while still
+    # resembling real agent-context content.
+    digest = hashlib.sha256(f"{seed}:{size_bytes}".encode("utf-8")).hexdigest()
+    template = (
+        f"payload_format={PAYLOAD_TEXT_FORMAT_VERSION} "
+        f"seed={seed} "
+        "This synthetic pydantic supervisor payload captures nested context for "
+        "checkout and death benefit triage with retrieval evidence, tool args, "
+        "and planning notes. "
+        "The user asks for checkout status and death claim guidance while the "
+        "assistant validates steps and cites policy docs. "
+        "context.thread.summary mentions checkout, death, latency, and replay. "
+        "retrieval.evidence.snippet contains policy constraints and citations. "
+        f"digest={digest} "
+    )
+    repeats = (size_bytes + len(template) - 1) // len(template)
+    return (template * repeats)[:size_bytes]
 
 
 def payload_sha256_hex(payload_text: str) -> str:
@@ -87,7 +101,9 @@ def canonical_blob_path(
     span_payload_target_bytes: int,
     payload_seed: str,
 ) -> Path:
-    token = hashlib.sha256(payload_seed.encode("utf-8")).hexdigest()[:12]
+    token = hashlib.sha256(
+        f"{payload_seed}:{PAYLOAD_TEXT_FORMAT_VERSION}".encode("utf-8")
+    ).hexdigest()[:12]
     return canonical_dir / f"payload_{span_payload_target_bytes}_{token}.txt"
 
 
@@ -121,11 +137,74 @@ def _kv_int(key: str, value: int) -> common_pb2.KeyValue:
     )
 
 
+def _kv_string_array(key: str, values: list[str]) -> common_pb2.KeyValue:
+    return common_pb2.KeyValue(
+        key=key,
+        value=common_pb2.AnyValue(
+            array_value=common_pb2.ArrayValue(
+                values=[common_pb2.AnyValue(string_value=v) for v in values]
+            )
+        ),
+    )
+
+
+def _query_seed_terms(entry: dict[str, Any]) -> dict[str, str]:
+    base = hashlib.sha256(
+        (
+            f"{entry.get('run_tag', '')}:{entry.get('trace_id', '')}:"
+            f"{entry.get('span_id', '')}"
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "lvl1": f"death_l1_{base[:12]}",
+        "lvl2": f"death_l2_{base[12:24]}",
+        "lvl3": f"death_l3_{base[24:36]}",
+        "lvl4": f"death_l4_{base[36:48]}",
+        "json": f"death_json_{base[48:60]}",
+    }
+
+
+def seed_terms_for_entry(entry: dict[str, Any]) -> dict[str, str]:
+    terms = _query_seed_terms(entry)
+    return {
+        "seed_term_level_1": terms["lvl1"],
+        "seed_term_level_2": terms["lvl2"],
+        "seed_term_level_3": terms["lvl3"],
+        "seed_term_level_4": terms["lvl4"],
+        "seed_term_json": terms["json"],
+    }
+
+
 def build_span_attributes(
     *,
     entry: dict[str, Any],
     payload_chunks: list[str],
 ) -> list[common_pb2.KeyValue]:
+    seeds = _query_seed_terms(entry)
+    nested_blob = json.dumps(
+        {
+            "bt": {
+                "prompt": {"system": {"seed_term": seeds["lvl1"]}},
+                "context": {
+                    "thread_summary": {"seed_term": seeds["lvl2"]},
+                    "tool_args": {
+                        "filters": {"primary": {"seed_term": seeds["lvl3"]}},
+                        "inputs": ["checkout", "death", str(entry["run_tag"])],
+                    },
+                    "seed_term": seeds["json"],
+                },
+                "retrieval": {
+                    "evidence": {
+                        "documents": {
+                            "primary": {"snippet": {"seed_term": seeds["lvl4"]}}
+                        }
+                    }
+                },
+            }
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
     attrs: list[common_pb2.KeyValue] = [
         _kv_string("stress_run_tag", str(entry["run_tag"])),
         _kv_string("hardmode.stage_name", str(entry["stage_name"])),
@@ -147,6 +226,27 @@ def build_span_attributes(
         _kv_int("hardmode_payload_chunk_size_bytes", int(entry["chunk_size_bytes"])),
         _kv_int("hardmode_trace_index", int(entry["trace_index"])),
         _kv_int("hardmode_span_index", int(entry["span_index"])),
+        # Mirror pydantic-supervisor style nested keys (dot-delimited) and
+        # plant deterministic seed terms for depth-aware query checks.
+        _kv_string("bt.prompt.system.seed_term", seeds["lvl1"]),
+        _kv_string("bt.context.thread_summary.seed_term", seeds["lvl2"]),
+        _kv_string("bt.context.tool_args.filters.primary.seed_term", seeds["lvl3"]),
+        _kv_string("bt.retrieval.evidence.documents.primary.snippet.seed_term", seeds["lvl4"]),
+        _kv_string("bt.context.serialized", nested_blob),
+        _kv_string("hardmode_query_seed_level_1", seeds["lvl1"]),
+        _kv_string("hardmode_query_seed_level_2", seeds["lvl2"]),
+        _kv_string("hardmode_query_seed_level_3", seeds["lvl3"]),
+        _kv_string("hardmode_query_seed_level_4", seeds["lvl4"]),
+        _kv_string("hardmode_query_seed_json", seeds["json"]),
+        _kv_string_array(
+            "span.tags",
+            [
+                "checkout",
+                "death",
+                str(entry["stage_name"]),
+                str(entry["run_tag"]),
+            ],
+        ),
     ]
     for idx, chunk in enumerate(payload_chunks):
         attrs.append(_kv_string(f"{PAYLOAD_CHUNK_KEY_PREFIX}{idx:04d}", chunk))
@@ -286,6 +386,14 @@ def _decode_any_value(value: dict[str, Any]) -> str:
         return str(value["doubleValue"])
     if "bytesValue" in value and isinstance(value["bytesValue"], str):
         return value["bytesValue"]
+    if "arrayValue" in value and isinstance(value["arrayValue"], dict):
+        values = value["arrayValue"].get("values")
+        if isinstance(values, list):
+            parts: list[str] = []
+            for item in values:
+                if isinstance(item, dict):
+                    parts.append(_decode_any_value(item))
+            return ",".join(parts)
     return ""
 
 

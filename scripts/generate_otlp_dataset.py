@@ -20,6 +20,7 @@ from src.tempo_hardmode_otlp import (
     now_unix_ms,
     payload_sha256_hex,
     read_json,
+    seed_terms_for_entry,
     span_id_for,
     trace_id_for,
     write_json,
@@ -158,6 +159,7 @@ def main() -> None:
         "emitted_at_unix_ms": 0,
         "canonical_blob_path": selected_blob_path,
     }
+    exemplar_entry.update(seed_terms_for_entry(exemplar_entry))
     exemplar_wire_size = compute_wire_request_size_bytes(
         entry=exemplar_entry,
         payload_chunks=payload_chunks_for_selected,
@@ -185,6 +187,7 @@ def main() -> None:
                 "emitted_at_unix_ms": 0,
                 "canonical_blob_path": selected_blob_path,
             }
+            entry.update(seed_terms_for_entry(entry))
             entries.append(entry)
 
     manifest = {
