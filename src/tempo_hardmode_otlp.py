@@ -137,6 +137,16 @@ def build_span_attributes(
         _kv_int("hardmode.payload.chunk_size_bytes", int(entry["chunk_size_bytes"])),
         _kv_int("hardmode.trace_index", int(entry["trace_index"])),
         _kv_int("hardmode.span_index", int(entry["span_index"])),
+        # Duplicate marker attrs with underscore keys so TraceQL field references are simple.
+        _kv_string("hardmode_stage_name", str(entry["stage_name"])),
+        _kv_string("hardmode_trace_id", str(entry["trace_id"])),
+        _kv_string("hardmode_span_id", str(entry["span_id"])),
+        _kv_string("hardmode_payload_sha256", str(entry["payload_sha256"])),
+        _kv_int("hardmode_payload_size_bytes", int(entry["span_payload_target_bytes"])),
+        _kv_int("hardmode_payload_chunk_count", int(entry["chunk_count"])),
+        _kv_int("hardmode_payload_chunk_size_bytes", int(entry["chunk_size_bytes"])),
+        _kv_int("hardmode_trace_index", int(entry["trace_index"])),
+        _kv_int("hardmode_span_index", int(entry["span_index"])),
     ]
     for idx, chunk in enumerate(payload_chunks):
         attrs.append(_kv_string(f"{PAYLOAD_CHUNK_KEY_PREFIX}{idx:04d}", chunk))
@@ -447,4 +457,3 @@ def grpc_export_request(
         return False, str(exc)
     finally:
         channel.close()
-

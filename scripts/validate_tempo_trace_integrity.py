@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 import sys
 from typing import Any
+import urllib.parse
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -32,7 +33,164 @@ def _group_by_trace(entries: list[dict[str, Any]]) -> dict[str, list[dict[str, A
     return out
 
 
-def _verify_trace(
+def _extract_trace_ids(payload: Any) -> set[str]:
+    trace_ids: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            trace_id = node.get("traceID") or node.get("traceId")
+            if isinstance(trace_id, str):
+                trace_ids.add(trace_id)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return trace_ids
+
+
+def _traceql_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _query_traceql_search(
+    *,
+    base_url: str,
+    traceql: str,
+    http_timeout_seconds: float,
+    basic_auth: str | None = None,
+) -> tuple[int, set[str], str]:
+    query = urllib.parse.urlencode({"q": traceql, "limit": "20"})
+    code, parsed, raw = fetch_json(
+        f"{base_url.rstrip('/')}/api/search?{query}",
+        timeout_seconds=http_timeout_seconds,
+        basic_auth=basic_auth,
+    )
+    trace_ids = _extract_trace_ids(parsed) if parsed is not None else set()
+    return code, trace_ids, (raw or "")[:300]
+
+
+def _span_traceql_candidates(entry: dict[str, Any]) -> list[str]:
+    # Primary query uses underscore marker attrs added for easier TraceQL references.
+    # Fallback query uses dotted attrs for compatibility with older datasets.
+    span_id = _traceql_escape(str(entry["span_id"]))
+    payload_sha = _traceql_escape(str(entry["payload_sha256"]))
+    run_tag = _traceql_escape(str(entry["run_tag"]))
+    return [
+        (
+            f'{{.hardmode_span_id="{span_id}" '
+            f'&& .hardmode_payload_sha256="{payload_sha}" '
+            f'&& .stress_run_tag="{run_tag}"}}'
+        ),
+        (
+            f'{{.hardmode.span_id="{span_id}" '
+            f'&& .hardmode.payload.sha256="{payload_sha}" '
+            f'&& .stress_run_tag="{run_tag}"}}'
+        ),
+    ]
+
+
+def _verify_trace_via_span_search(
+    *,
+    trace_id: str,
+    expected_entries: list[dict[str, Any]],
+    tempo_base_url: str,
+    grafana_base_url: str,
+    grafana_auth: str,
+    query_timeout_seconds: float,
+    poll_interval_seconds: float,
+    http_timeout_seconds: float,
+) -> dict[str, Any]:
+    expected_span_ids = {str(entry["span_id"]) for entry in expected_entries}
+    expected_by_span = {str(entry["span_id"]): entry for entry in expected_entries}
+    emitted_latest_ms = max(
+        int(entry.get("emitted_at_unix_ms", 0) or 0) for entry in expected_entries
+    )
+
+    started_ms = int(time.time() * 1000)
+    deadline_ms = started_ms + int(query_timeout_seconds * 1000)
+
+    missing = set(expected_span_ids)
+    found_at_ms: dict[str, int] = {}
+    tempo_last_code = 0
+    tempo_last_error = ""
+    grafana_last_code = 0
+    grafana_last_error = ""
+
+    while missing and int(time.time() * 1000) <= deadline_ms:
+        for span_id in list(missing):
+            entry = expected_by_span[span_id]
+            expected_trace_id = str(entry["trace_id"])
+            found_in_tempo = False
+
+            for traceql in _span_traceql_candidates(entry):
+                tempo_last_code, trace_ids, tempo_err = _query_traceql_search(
+                    base_url=tempo_base_url,
+                    traceql=traceql,
+                    http_timeout_seconds=http_timeout_seconds,
+                )
+                if tempo_last_code != 200:
+                    tempo_last_error = tempo_err
+                    continue
+                if expected_trace_id in trace_ids:
+                    found_in_tempo = True
+                    break
+
+            if not found_in_tempo:
+                continue
+
+            # Optional secondary check against Grafana proxy path; non-blocking for pass/fail.
+            if grafana_base_url:
+                traceql = _span_traceql_candidates(entry)[0]
+                grafana_last_code, grafana_trace_ids, grafana_err = _query_traceql_search(
+                    base_url=grafana_base_url,
+                    traceql=traceql,
+                    http_timeout_seconds=http_timeout_seconds,
+                    basic_auth=grafana_auth if grafana_auth else None,
+                )
+                if grafana_last_code != 200 or expected_trace_id not in grafana_trace_ids:
+                    grafana_last_error = grafana_err
+
+            found_at_ms[span_id] = int(time.time() * 1000)
+            missing.remove(span_id)
+
+        if missing and int(time.time() * 1000) <= deadline_ms:
+            time.sleep(poll_interval_seconds)
+
+    span_failures = [
+        {
+            "span_id": span_id,
+            "failure_invariant": "span_not_queryable",
+            "details": "",
+        }
+        for span_id in sorted(missing)
+    ]
+    overall_ok = len(span_failures) == 0
+    write_to_queryable_ms = (
+        max(found_at_ms.values()) - emitted_latest_ms
+        if overall_ok and found_at_ms and emitted_latest_ms > 0
+        else -1
+    )
+
+    return {
+        "trace_id": trace_id,
+        "ok": overall_ok,
+        "validation_mode": "span_search",
+        "failure_invariant": (span_failures[0]["failure_invariant"] if span_failures else ""),
+        "tempo_http_code": tempo_last_code,
+        "tempo_error": tempo_last_error,
+        "grafana_http_code": grafana_last_code,
+        "grafana_error": grafana_last_error,
+        "expected_span_count": len(expected_entries),
+        "retrieved_span_count": len(found_at_ms),
+        "write_to_queryable_ms": write_to_queryable_ms,
+        "span_failures": span_failures,
+    }
+
+
+def _verify_trace_via_trace_fetch(
     *,
     trace_id: str,
     expected_entries: list[dict[str, Any]],
@@ -174,6 +332,7 @@ def _verify_trace(
     return {
         "trace_id": trace_id,
         "ok": overall_ok,
+        "validation_mode": "trace_fetch",
         "failure_invariant": failure_invariant,
         "tempo_http_code": fetch_code,
         "tempo_error": fetch_error,
@@ -184,6 +343,41 @@ def _verify_trace(
         "write_to_queryable_ms": write_to_queryable_ms,
         "span_failures": span_failures,
     }
+
+
+def _verify_trace(
+    *,
+    validation_mode: str,
+    trace_id: str,
+    expected_entries: list[dict[str, Any]],
+    tempo_base_url: str,
+    grafana_base_url: str,
+    grafana_auth: str,
+    query_timeout_seconds: float,
+    poll_interval_seconds: float,
+    http_timeout_seconds: float,
+) -> dict[str, Any]:
+    if validation_mode == "span_search":
+        return _verify_trace_via_span_search(
+            trace_id=trace_id,
+            expected_entries=expected_entries,
+            tempo_base_url=tempo_base_url,
+            grafana_base_url=grafana_base_url,
+            grafana_auth=grafana_auth,
+            query_timeout_seconds=query_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            http_timeout_seconds=http_timeout_seconds,
+        )
+    return _verify_trace_via_trace_fetch(
+        trace_id=trace_id,
+        expected_entries=expected_entries,
+        tempo_base_url=tempo_base_url,
+        grafana_base_url=grafana_base_url,
+        grafana_auth=grafana_auth,
+        query_timeout_seconds=query_timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        http_timeout_seconds=http_timeout_seconds,
+    )
 
 
 def main() -> None:
@@ -197,6 +391,12 @@ def main() -> None:
         default="http://localhost:3000/api/datasources/proxy/uid/tempo",
     )
     parser.add_argument("--grafana-auth", default="admin:admin")
+    parser.add_argument(
+        "--validation-mode",
+        choices=("trace_fetch", "span_search"),
+        default="trace_fetch",
+        help="trace_fetch: full /api/traces/<id> integrity; span_search: each span queryable by marker attrs",
+    )
     parser.add_argument("--query-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=2.0)
     parser.add_argument("--http-timeout-seconds", type=float, default=30.0)
@@ -246,6 +446,7 @@ def main() -> None:
     first_failure_invariant = ""
     for trace_id in trace_ids:
         result = _verify_trace(
+            validation_mode=args.validation_mode,
             trace_id=trace_id,
             expected_entries=grouped[trace_id],
             tempo_base_url=args.tempo_base_url,
@@ -276,6 +477,7 @@ def main() -> None:
     status = "passed" if fail_count == 0 else "failed"
     out = {
         "schema_version": 1,
+        "validation_mode": args.validation_mode,
         "validator_status": status,
         "trace_count": len(trace_results),
         "trace_passes": ok_count,
