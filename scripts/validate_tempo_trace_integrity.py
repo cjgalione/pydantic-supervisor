@@ -51,6 +51,24 @@ def _extract_trace_ids(payload: Any) -> set[str]:
     return trace_ids
 
 
+def _normalize_trace_id(trace_id: str) -> str:
+    raw = str(trace_id or "").strip().lower()
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    if not raw:
+        return raw
+    try:
+        return format(int(raw, 16), "032x")
+    except ValueError:
+        return raw
+
+
+def _trace_id_in_set(expected_trace_id: str, trace_ids: set[str]) -> bool:
+    normalized_expected = _normalize_trace_id(expected_trace_id)
+    normalized_set = {_normalize_trace_id(item) for item in trace_ids}
+    return normalized_expected in normalized_set
+
+
 def _traceql_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -196,7 +214,7 @@ def _validate_seed_queries(
                 traceql=str(check["traceql"]),
                 http_timeout_seconds=http_timeout_seconds,
             )
-            if last_code == 200 and trace_id in trace_ids:
+            if last_code == 200 and _trace_id_in_set(trace_id, trace_ids):
                 matched = True
                 last_err = ""
                 break
@@ -292,7 +310,7 @@ def _verify_trace_via_span_search(
                 if tempo_last_code != 200:
                     tempo_last_error = tempo_err
                     continue
-                if expected_trace_id in trace_ids:
+                if _trace_id_in_set(expected_trace_id, trace_ids):
                     found_in_tempo = True
                     break
 
@@ -308,7 +326,9 @@ def _verify_trace_via_span_search(
                     http_timeout_seconds=http_timeout_seconds,
                     basic_auth=grafana_auth if grafana_auth else None,
                 )
-                if grafana_last_code != 200 or expected_trace_id not in grafana_trace_ids:
+                if grafana_last_code != 200 or not _trace_id_in_set(
+                    expected_trace_id, grafana_trace_ids
+                ):
                     grafana_last_error = grafana_err
 
             found_at_ms[span_id] = int(time.time() * 1000)
