@@ -183,11 +183,13 @@ def _validate_seed_queries(
     failed_names: list[str] = []
     deadline_ms = int(time.time() * 1000) + int(query_timeout_seconds * 1000)
     for check in checks:
+        required = bool(check.get("required", True))
         last_code = 0
         last_err = ""
         matched = False
         attempts = 0
-        while int(time.time() * 1000) <= deadline_ms:
+        check_deadline_ms = deadline_ms if required else int(time.time() * 1000)
+        while int(time.time() * 1000) <= check_deadline_ms:
             attempts += 1
             last_code, trace_ids, tempo_err = _query_traceql_search(
                 base_url=tempo_base_url,
@@ -199,6 +201,8 @@ def _validate_seed_queries(
                 last_err = ""
                 break
             last_err = tempo_err
+            if not required:
+                break
             time.sleep(poll_interval_seconds)
         out.append(
             {
@@ -208,10 +212,10 @@ def _validate_seed_queries(
                 "attempts": attempts,
                 "error": last_err,
                 "traceql": str(check["traceql"]),
-                "required": bool(check.get("required", True)),
+                "required": required,
             }
         )
-        if not matched and bool(check.get("required", True)):
+        if not matched and required:
             failed_names.append(str(check["name"]))
     return out, failed_names
 
