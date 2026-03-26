@@ -230,7 +230,7 @@ PY
 function traceql_for_class() {
   local class_name="$1"
   local run_tag="$2"
-  local run_filter="stress_run_tag=\"$run_tag\""
+  local run_filter=".stress_run_tag=\"$run_tag\""
   case "$class_name" in
     generic)
       echo "{$run_filter}"
