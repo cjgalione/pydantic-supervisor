@@ -21,17 +21,19 @@ TEMPO_INGEST_BURST_SIZE_BYTES="${TEMPO_INGEST_BURST_SIZE_BYTES:-400000000}"
 TEMPO_MAX_BYTES_PER_TRACE="${TEMPO_MAX_BYTES_PER_TRACE:-10737418240}"
 TEMPO_MAX_ATTRIBUTE_BYTES="${TEMPO_MAX_ATTRIBUTE_BYTES:-104857600}"
 TEMPO_GRPC_MAX_MSG_SIZE="${TEMPO_GRPC_MAX_MSG_SIZE:-2147483647}"
+TEMPO_OTLP_GRPC_MAX_RECV_MSG_SIZE_MIB="${TEMPO_OTLP_GRPC_MAX_RECV_MSG_SIZE_MIB:-1024}"
 TEMPO_SEARCH_DURATION_SLO_SECONDS="${TEMPO_SEARCH_DURATION_SLO_SECONDS:-120}"
 TEMPO_SEARCH_THROUGHPUT_BYTES_SLO="${TEMPO_SEARCH_THROUGHPUT_BYTES_SLO:-4294967296}"
 
 # Breakpoint loop settings
 START_SPAN_TARGET_BYTES="${TEMPO_BREAKPOINT_START_SPAN_TARGET_BYTES:-10485760}" # 10 MiB
-SPAN_SEQUENCE_BYTES="${TEMPO_BREAKPOINT_SPAN_SEQUENCE_BYTES:-}"
+SPAN_SEQUENCE_BYTES="${TEMPO_BREAKPOINT_SPAN_SEQUENCE_BYTES:-102400,512000,1048576,10485760,52428800,104857600}"
 SPAN_GROWTH_FACTOR="${TEMPO_BREAKPOINT_SPAN_GROWTH_FACTOR:-2}"
+SPAN_COUNT_GROWTH_AFTER_SEQUENCE="${TEMPO_BREAKPOINT_SPAN_COUNT_GROWTH_AFTER_SEQUENCE:-10}"
 STEP_INTERVAL_SECONDS="${TEMPO_BREAKPOINT_STEP_INTERVAL_SECONDS:-60}"
 MAX_STEPS="${TEMPO_BREAKPOINT_MAX_STEPS:-12}"
 MIN_TRACE_TARGET_BYTES="${TEMPO_BREAKPOINT_MIN_TRACE_TARGET_BYTES:-1073741824}" # 1 GiB
-SPANS_PER_TRACE="${TEMPO_BREAKPOINT_SPANS_PER_TRACE:-200}"
+SPANS_PER_TRACE="${TEMPO_BREAKPOINT_SPANS_PER_TRACE:-100}"
 QUESTIONS_PER_STEP="${TEMPO_BREAKPOINT_QUESTIONS_PER_STEP:-1}"
 CONCURRENCY_PER_STEP="${TEMPO_BREAKPOINT_CONCURRENCY_PER_STEP:-1}"
 SEARCH_LIMIT="${TEMPO_BREAKPOINT_SEARCH_LIMIT:-20}"
@@ -49,6 +51,7 @@ TRACE_SPAN_ATTRIBUTE_LIMIT="${TRACE_SPAN_ATTRIBUTE_LIMIT:-50000}"
 TRACE_SPAN_ATTRIBUTE_VALUE_LIMIT="${TRACE_SPAN_ATTRIBUTE_VALUE_LIMIT:-131072}"
 
 SPAN_SEQUENCE_MODE=0
+SPAN_SEQUENCE_LAST_VALUE=0
 declare -a SPAN_SEQUENCE_VALUES=()
 if [[ -n "$SPAN_SEQUENCE_BYTES" ]]; then
   IFS=',' read -r -a _raw_span_sequence <<< "$SPAN_SEQUENCE_BYTES"
@@ -60,9 +63,7 @@ if [[ -n "$SPAN_SEQUENCE_BYTES" ]]; then
   done
   if [[ "${#SPAN_SEQUENCE_VALUES[@]}" -gt 0 ]]; then
     SPAN_SEQUENCE_MODE=1
-    if [[ "$MAX_STEPS" -gt "${#SPAN_SEQUENCE_VALUES[@]}" ]]; then
-      MAX_STEPS="${#SPAN_SEQUENCE_VALUES[@]}"
-    fi
+    SPAN_SEQUENCE_LAST_VALUE="${SPAN_SEQUENCE_VALUES[$(( ${#SPAN_SEQUENCE_VALUES[@]} - 1 ))]}"
   fi
 fi
 
@@ -84,6 +85,7 @@ function render_tempo_config() {
     "$TEMPO_MAX_BYTES_PER_TRACE" \
     "$TEMPO_MAX_ATTRIBUTE_BYTES" \
     "$TEMPO_GRPC_MAX_MSG_SIZE" \
+    "$TEMPO_OTLP_GRPC_MAX_RECV_MSG_SIZE_MIB" \
     "$TEMPO_SEARCH_DURATION_SLO_SECONDS" \
     "$TEMPO_SEARCH_THROUGHPUT_BYTES_SLO" <<'PY'
 import pathlib
@@ -97,6 +99,7 @@ keys = (
     "TEMPO_MAX_BYTES_PER_TRACE",
     "TEMPO_MAX_ATTRIBUTE_BYTES",
     "TEMPO_GRPC_MAX_MSG_SIZE",
+    "TEMPO_OTLP_GRPC_MAX_RECV_MSG_SIZE_MIB",
     "TEMPO_SEARCH_DURATION_SLO_SECONDS",
     "TEMPO_SEARCH_THROUGHPUT_BYTES_SLO",
 )
@@ -194,7 +197,7 @@ PY
   rm -f "$body_file"
 }
 
-echo "==> Rendering Tempo config with max_bytes_per_trace=${TEMPO_MAX_BYTES_PER_TRACE} max_attribute_bytes=${TEMPO_MAX_ATTRIBUTE_BYTES} grpc_max_msg_size=${TEMPO_GRPC_MAX_MSG_SIZE}"
+echo "==> Rendering Tempo config with max_bytes_per_trace=${TEMPO_MAX_BYTES_PER_TRACE} max_attribute_bytes=${TEMPO_MAX_ATTRIBUTE_BYTES} grpc_max_msg_size=${TEMPO_GRPC_MAX_MSG_SIZE} otlp_grpc_max_recv_msg_size_mib=${TEMPO_OTLP_GRPC_MAX_RECV_MSG_SIZE_MIB}"
 render_tempo_config
 echo "==> Ensuring Tempo stack is running"
 compose_up_wait
@@ -204,21 +207,26 @@ wait_for_http_200 "Grafana Tempo datasource proxy" "http://localhost:3000/api/da
 
 echo "==> Starting breakpoint loop"
 if [[ "$SPAN_SEQUENCE_MODE" -eq 1 ]]; then
-  echo "==> span_sequence_bytes=${SPAN_SEQUENCE_VALUES[*]} spans_per_trace=${SPANS_PER_TRACE} min_trace_target_bytes=${MIN_TRACE_TARGET_BYTES} max_steps=${MAX_STEPS}"
+  echo "==> span_sequence_bytes=${SPAN_SEQUENCE_VALUES[*]} spans_per_trace_start=${SPANS_PER_TRACE} span_count_growth_after_sequence=${SPAN_COUNT_GROWTH_AFTER_SEQUENCE} min_trace_target_bytes=${MIN_TRACE_TARGET_BYTES} max_steps=${MAX_STEPS}"
 else
   echo "==> start_span_target_bytes=${START_SPAN_TARGET_BYTES} spans_per_trace=${SPANS_PER_TRACE} min_trace_target_bytes=${MIN_TRACE_TARGET_BYTES} max_steps=${MAX_STEPS}"
 fi
 
 span_target_bytes="$START_SPAN_TARGET_BYTES"
+spans_per_trace_current="$SPANS_PER_TRACE"
 for step in $(seq 1 "$MAX_STEPS"); do
   step_started="$(date +%s)"
   run_tag="breakpoint-step${step}-$(date +%s)"
 
   if [[ "$SPAN_SEQUENCE_MODE" -eq 1 ]]; then
-    span_target_bytes="${SPAN_SEQUENCE_VALUES[$((step - 1))]}"
+    if [[ "$step" -le "${#SPAN_SEQUENCE_VALUES[@]}" ]]; then
+      span_target_bytes="${SPAN_SEQUENCE_VALUES[$((step - 1))]}"
+    else
+      span_target_bytes="$SPAN_SEQUENCE_LAST_VALUE"
+    fi
   fi
 
-  computed_trace_target=$((span_target_bytes * SPANS_PER_TRACE))
+  computed_trace_target=$((span_target_bytes * spans_per_trace_current))
   trace_target_bytes="$computed_trace_target"
   if [[ "$trace_target_bytes" -lt "$MIN_TRACE_TARGET_BYTES" ]]; then
     trace_target_bytes="$MIN_TRACE_TARGET_BYTES"
@@ -228,13 +236,13 @@ for step in $(seq 1 "$MAX_STEPS"); do
   manifest_file="$RAW_DIR/step${step}_trace_manifest.json"
   probe_file="$RAW_DIR/step${step}_search_probe.json"
 
-  echo "==> step=${step} run_tag=${run_tag} span_target_bytes=${span_target_bytes} trace_target_bytes=${trace_target_bytes}"
+  echo "==> step=${step} run_tag=${run_tag} span_target_bytes=${span_target_bytes} spans_per_trace=${spans_per_trace_current} trace_target_bytes=${trace_target_bytes}"
 
   set +e
   TRACE_BACKEND="$TRACE_BACKEND_VALUE" \
   TRACE_RUN_TAG="$run_tag" \
   TRACE_SPAN_TARGET_BYTES="$span_target_bytes" \
-  TRACE_SYNTHETIC_MIN_SPANS="$SPANS_PER_TRACE" \
+  TRACE_SYNTHETIC_MIN_SPANS="$spans_per_trace_current" \
   TRACE_SPAN_PAUSE_MS="$TRACE_SPAN_PAUSE_MS" \
   TRACE_SPAN_PAUSE_EVERY="$TRACE_SPAN_PAUSE_EVERY" \
   TRACE_SPAN_ATTRIBUTE_LIMIT="$TRACE_SPAN_ATTRIBUTE_LIMIT" \
@@ -325,6 +333,7 @@ PY
   "step": $step,
   "run_tag": "$run_tag",
   "span_target_bytes": $span_target_bytes,
+  "spans_per_trace_target": $spans_per_trace_current,
   "trace_target_bytes": $trace_target_bytes,
   "latest_emitted_at_unix_ms": $latest_emitted_ms,
   "queryable_latency_ms": $queryable_latency_ms,
@@ -360,7 +369,7 @@ print(
 PY
 )"
 
-  echo "   step=${step} run_exit=${run_exit} failures=${failures} export_failures=${export_failures} failed_spans=${failed_spans} tempo_generic_code=${tempo_code} tempo_generic_hits=${tempo_hits} queryable_latency_ms=${queryable_latency} queryable_within_timeout=${queryable_ok}"
+  echo "   step=${step} run_exit=${run_exit} failures=${failures} export_failures=${export_failures} failed_spans=${failed_spans} tempo_generic_code=${tempo_code} tempo_generic_hits=${tempo_hits} queryable_latency_ms=${queryable_latency} queryable_within_timeout=${queryable_ok} spans_per_trace=${spans_per_trace_current}"
 
   if [[ "$run_exit" -ne 0 ]]; then
     echo "==> STOP: run_queries exited non-zero at step=${step}"
@@ -382,7 +391,11 @@ PY
     sleep "$sleep_seconds"
   fi
 
-  if [[ "$SPAN_SEQUENCE_MODE" -ne 1 ]]; then
+  if [[ "$SPAN_SEQUENCE_MODE" -eq 1 ]]; then
+    if [[ "$step" -ge "${#SPAN_SEQUENCE_VALUES[@]}" ]]; then
+      spans_per_trace_current=$((spans_per_trace_current + SPAN_COUNT_GROWTH_AFTER_SEQUENCE))
+    fi
+  else
     span_target_bytes=$(( span_target_bytes * SPAN_GROWTH_FACTOR ))
   fi
 done

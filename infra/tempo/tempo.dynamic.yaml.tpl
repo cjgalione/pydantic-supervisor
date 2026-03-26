@@ -10,6 +10,7 @@ distributor:
       protocols:
         grpc:
           endpoint: 0.0.0.0:4317
+          max_recv_msg_size_mib: __TEMPO_OTLP_GRPC_MAX_RECV_MSG_SIZE_MIB__
         http:
           endpoint: 0.0.0.0:4318
 
