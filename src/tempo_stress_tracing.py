@@ -298,47 +298,38 @@ def _expanded_turn_attributes(
     target_span_bytes: int,
     seed: str,
     base: dict[str, Any],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], int]:
     attrs = dict(base)
-    if _attrs_size_bytes(attrs) >= target_span_bytes:
-        return attrs
+    current_size = _attrs_size_bytes(attrs)
+    if current_size >= target_span_bytes:
+        return attrs, current_size
 
+    # Keep a representative structured surface area, then use a single
+    # deterministic filler field to hit exact byte targets efficiently.
     key_specs = [
         ("bt.prompt.system", 1024),
         ("bt.prompt.instructions", 1024),
         ("bt.prompt.guardrails", 1024),
-        ("bt.prompt.examples", 1024),
         ("bt.context.thread_summary", 1536),
         ("bt.context.research_notes", 1536),
-        ("bt.context.math_notes", 1536),
         ("bt.context.tool_args", 1536),
-        ("bt.context.tool_result", 1536),
-        ("bt.context.validation", 1024),
-        ("bt.context.observations", 1024),
-        ("bt.context.candidate_answers", 1024),
         ("bt.retrieval.query_plan", 1024),
-        ("bt.retrieval.query_terms", 1024),
         ("bt.retrieval.evidence", 1536),
         ("bt.reasoning.plan", 1024),
-        ("bt.reasoning.critique", 1024),
-        ("bt.reasoning.revision", 1024),
-        ("bt.metrics.token_breakdown", 768),
-        ("bt.metrics.latency_breakdown", 768),
-        ("bt.output.critic_feedback", 1536),
         ("bt.output.final_answer", 1536),
-        ("bt.output.citations", 1024),
-        ("bt.output.followups", 1024),
     ]
+    for slot, (key, chars) in enumerate(key_specs, start=1):
+        attrs[f"{key}.001"] = _seed_segment(seed, step=step, slot=slot, target_chars=chars)
 
-    slot = 1
-    while _attrs_size_bytes(attrs) < target_span_bytes:
-        for key, chars in key_specs:
-            if _attrs_size_bytes(attrs) >= target_span_bytes:
-                break
-            numbered_key = f"{key}.{slot:03d}"
-            attrs[numbered_key] = _seed_segment(seed, step=step, slot=slot, target_chars=chars)
-            slot += 1
-    return attrs
+    # Using only ASCII filler means each extra character contributes 1 byte
+    # in JSON output, so we can deterministically size each span payload.
+    attrs["bt.payload.filler"] = ""
+    size_with_empty_filler = _attrs_size_bytes(attrs)
+    filler_len = max(0, target_span_bytes - size_with_empty_filler)
+    if filler_len > 0:
+        attrs["bt.payload.filler"] = "x" * filler_len
+    final_size = size_with_empty_filler + filler_len
+    return attrs, final_size
 
 
 def _resolve_pause_config() -> tuple[int, int]:
@@ -464,13 +455,13 @@ def emit_supervisor_trace(
                 seed=payload_seed,
                 run_tag=run_tag,
             )
-            turn_attrs = _expanded_turn_attributes(
+            turn_attrs, turn_payload_bytes = _expanded_turn_attributes(
                 step=idx,
                 target_span_bytes=stage_target_bytes,
                 seed=payload_seed,
                 base=turn_attrs,
             )
-            emitted_payload_bytes += _attrs_size_bytes(turn_attrs)
+            emitted_payload_bytes += turn_payload_bytes
             with _tracer.start_as_current_span(
                 f"synthetic_step_{idx:03d}",
                 attributes=turn_attrs,
