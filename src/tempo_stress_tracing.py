@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import time
+from functools import lru_cache
 from typing import Any
 
 from opentelemetry import trace
@@ -231,6 +232,13 @@ def _attrs_size_bytes(attrs: dict[str, Any]) -> int:
     return len(json.dumps(attrs, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+@lru_cache(maxsize=64)
+def _cached_filler(length: int) -> str:
+    if length <= 0:
+        return ""
+    return "x" * length
+
+
 def _search_terms(text: str, *, limit: int = 24) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -327,7 +335,7 @@ def _expanded_turn_attributes(
     size_with_empty_filler = _attrs_size_bytes(attrs)
     filler_len = max(0, target_span_bytes - size_with_empty_filler)
     if filler_len > 0:
-        attrs["bt.payload.filler"] = "x" * filler_len
+        attrs["bt.payload.filler"] = _cached_filler(filler_len)
     final_size = size_with_empty_filler + filler_len
     return attrs, final_size
 
