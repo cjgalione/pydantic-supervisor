@@ -130,7 +130,7 @@ def configure_otel_exporter(*, service_name: str, run_tag: str | None = None) ->
     monitored_exporter = _MonitoringExporter(exporter)
 
     from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace import SpanLimits, TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     resource = Resource.create(
@@ -142,7 +142,15 @@ def configure_otel_exporter(*, service_name: str, run_tag: str | None = None) ->
         }
     )
 
-    provider = TracerProvider(resource=resource)
+    # Default OTEL limits (especially max_attributes=128) are too low for stress
+    # traces with heavy structured attributes; raise safely for this harness.
+    span_limits = SpanLimits(
+        max_attributes=int(os.environ.get("TRACE_SPAN_ATTRIBUTE_LIMIT", "50000")),
+        max_attribute_length=int(os.environ.get("TRACE_SPAN_ATTRIBUTE_VALUE_LIMIT", "131072")),
+        max_events=int(os.environ.get("TRACE_SPAN_EVENT_LIMIT", "2048")),
+        max_links=int(os.environ.get("TRACE_SPAN_LINK_LIMIT", "2048")),
+    )
+    provider = TracerProvider(resource=resource, span_limits=span_limits)
     processor = BatchSpanProcessor(
         monitored_exporter,
         max_queue_size=int(os.environ.get("OTEL_BSP_MAX_QUEUE_SIZE", "8192")),
@@ -204,9 +212,8 @@ def _resolve_fragment_bytes() -> int:
         parsed = int(raw)
     except ValueError:
         parsed = 8_192
-    # Keep spans production-like and protect the host from accidental giant
-    # single-span payload settings.
-    return min(max(256, parsed), 65_536)
+    # Permit large span payload experiments up to 6 MiB per span.
+    return min(max(256, parsed), 6 * 1024 * 1024)
 
 
 def _attrs_size_bytes(attrs: dict[str, Any]) -> int:
@@ -286,16 +293,30 @@ def _expanded_turn_attributes(
         return attrs
 
     key_specs = [
-        ("bt.prompt.system", 256),
-        ("bt.prompt.instructions", 384),
-        ("bt.context.thread_summary", 384),
-        ("bt.context.research_notes", 512),
-        ("bt.context.math_notes", 256),
-        ("bt.context.tool_args", 384),
-        ("bt.context.tool_result", 512),
-        ("bt.context.validation", 256),
-        ("bt.output.critic_feedback", 384),
-        ("bt.output.final_answer", 512),
+        ("bt.prompt.system", 1024),
+        ("bt.prompt.instructions", 1024),
+        ("bt.prompt.guardrails", 1024),
+        ("bt.prompt.examples", 1024),
+        ("bt.context.thread_summary", 1536),
+        ("bt.context.research_notes", 1536),
+        ("bt.context.math_notes", 1536),
+        ("bt.context.tool_args", 1536),
+        ("bt.context.tool_result", 1536),
+        ("bt.context.validation", 1024),
+        ("bt.context.observations", 1024),
+        ("bt.context.candidate_answers", 1024),
+        ("bt.retrieval.query_plan", 1024),
+        ("bt.retrieval.query_terms", 1024),
+        ("bt.retrieval.evidence", 1536),
+        ("bt.reasoning.plan", 1024),
+        ("bt.reasoning.critique", 1024),
+        ("bt.reasoning.revision", 1024),
+        ("bt.metrics.token_breakdown", 768),
+        ("bt.metrics.latency_breakdown", 768),
+        ("bt.output.critic_feedback", 1536),
+        ("bt.output.final_answer", 1536),
+        ("bt.output.citations", 1024),
+        ("bt.output.followups", 1024),
     ]
 
     slot = 1
