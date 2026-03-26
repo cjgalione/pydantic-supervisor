@@ -35,6 +35,8 @@ SPANS_PER_TRACE="${TEMPO_BREAKPOINT_SPANS_PER_TRACE:-200}"
 QUESTIONS_PER_STEP="${TEMPO_BREAKPOINT_QUESTIONS_PER_STEP:-1}"
 CONCURRENCY_PER_STEP="${TEMPO_BREAKPOINT_CONCURRENCY_PER_STEP:-1}"
 SEARCH_LIMIT="${TEMPO_BREAKPOINT_SEARCH_LIMIT:-20}"
+QUERYABLE_TIMEOUT_SECONDS="${TEMPO_BREAKPOINT_QUERYABLE_TIMEOUT_SECONDS:-180}"
+QUERYABLE_POLL_INTERVAL_SECONDS="${TEMPO_BREAKPOINT_QUERYABLE_POLL_INTERVAL_SECONDS:-2}"
 
 OTEL_BSP_MAX_QUEUE_SIZE="${TEMPO_OTEL_BSP_MAX_QUEUE_SIZE:-32768}"
 OTEL_BSP_MAX_EXPORT_BATCH_SIZE="${TEMPO_OTEL_BSP_MAX_EXPORT_BATCH_SIZE:-256}"
@@ -265,7 +267,54 @@ for step in $(seq 1 "$MAX_STEPS"); do
   service_q="{resource.service.name=\"pydantic-supervisor\" && $run_filter}"
   dot_service_q="{.service.name=\"pydantic-supervisor\" && $run_filter}"
 
-  tempo_generic="$(json_http_probe_traceql 'http://localhost:3200/api/search' '' "$generic_q" "$SEARCH_LIMIT")"
+  latest_emitted_ms="$(python3 - "$manifest_file" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+except Exception:
+    d = {}
+v = int(d.get("latest_emitted_at_unix_ms", 0) or 0)
+print(v)
+PY
+)"
+  poll_start_ms="$(date +%s%3N)"
+  deadline_ms=$((poll_start_ms + QUERYABLE_TIMEOUT_SECONDS * 1000))
+  queryable_latency_ms=-1
+  queryable_within_timeout=0
+  queryable_polls=0
+  tempo_generic='{"http_code":0,"time_total":0.0,"trace_count":0}'
+  tempo_code=0
+  tempo_hits=0
+
+  while true; do
+    queryable_polls=$((queryable_polls + 1))
+    tempo_generic="$(json_http_probe_traceql 'http://localhost:3200/api/search' '' "$generic_q" "$SEARCH_LIMIT")"
+    read -r tempo_code tempo_hits <<< "$(python3 - "$tempo_generic" <<'PY'
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    d = {}
+print(int(d.get("http_code", 0) or 0), int(d.get("trace_count", 0) or 0))
+PY
+)"
+    if [[ "$tempo_code" -eq 200 && "$tempo_hits" -gt 0 ]]; then
+      queryable_within_timeout=1
+      now_ms="$(date +%s%3N)"
+      baseline_ms="$latest_emitted_ms"
+      if [[ "$baseline_ms" -le 0 ]]; then
+        baseline_ms="$poll_start_ms"
+      fi
+      queryable_latency_ms=$((now_ms - baseline_ms))
+      break
+    fi
+    now_ms="$(date +%s%3N)"
+    if [[ "$now_ms" -ge "$deadline_ms" ]]; then
+      break
+    fi
+    sleep "$QUERYABLE_POLL_INTERVAL_SECONDS"
+  done
+
   tempo_span_name="$(json_http_probe_traceql 'http://localhost:3200/api/search' '' "$span_name_q" "$SEARCH_LIMIT")"
   tempo_service="$(json_http_probe_traceql 'http://localhost:3200/api/search' '' "$service_q" "$SEARCH_LIMIT")"
   tempo_dot_service="$(json_http_probe_traceql 'http://localhost:3200/api/search' '' "$dot_service_q" "$SEARCH_LIMIT")"
@@ -277,6 +326,10 @@ for step in $(seq 1 "$MAX_STEPS"); do
   "run_tag": "$run_tag",
   "span_target_bytes": $span_target_bytes,
   "trace_target_bytes": $trace_target_bytes,
+  "latest_emitted_at_unix_ms": $latest_emitted_ms,
+  "queryable_latency_ms": $queryable_latency_ms,
+  "queryable_within_timeout": $queryable_within_timeout,
+  "queryable_polls": $queryable_polls,
   "tempo_generic": $tempo_generic,
   "tempo_span_name": $tempo_span_name,
   "tempo_service": $tempo_service,
@@ -294,15 +347,20 @@ print(int(d.get("failures", 0) or 0), int(o.get("export_failures", 0) or 0), int
 PY
 )"
 
-  read -r tempo_code tempo_hits <<< "$(python3 - "$probe_file" <<'PY'
+  read -r tempo_code tempo_hits queryable_latency queryable_ok <<< "$(python3 - "$probe_file" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1], "r", encoding="utf-8"))
 g = d.get("tempo_generic") or {}
-print(int(g.get("http_code", 0) or 0), int(g.get("trace_count", 0) or 0))
+print(
+    int(g.get("http_code", 0) or 0),
+    int(g.get("trace_count", 0) or 0),
+    int(d.get("queryable_latency_ms", -1) or -1),
+    int(d.get("queryable_within_timeout", 0) or 0),
+)
 PY
 )"
 
-  echo "   step=${step} run_exit=${run_exit} failures=${failures} export_failures=${export_failures} failed_spans=${failed_spans} tempo_generic_code=${tempo_code} tempo_generic_hits=${tempo_hits}"
+  echo "   step=${step} run_exit=${run_exit} failures=${failures} export_failures=${export_failures} failed_spans=${failed_spans} tempo_generic_code=${tempo_code} tempo_generic_hits=${tempo_hits} queryable_latency_ms=${queryable_latency} queryable_within_timeout=${queryable_ok}"
 
   if [[ "$run_exit" -ne 0 ]]; then
     echo "==> STOP: run_queries exited non-zero at step=${step}"
