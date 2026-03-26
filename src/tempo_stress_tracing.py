@@ -212,8 +212,8 @@ def _resolve_fragment_bytes() -> int:
         parsed = int(raw)
     except ValueError:
         parsed = 8_192
-    # Permit large span payload experiments up to 64 MiB per span.
-    return min(max(256, parsed), 64 * 1024 * 1024)
+    # Permit hard-mode span payload experiments up to 512 MiB per span.
+    return min(max(256, parsed), 512 * 1024 * 1024)
 
 
 def _resolve_synthetic_min_spans(default_value: int) -> int:
