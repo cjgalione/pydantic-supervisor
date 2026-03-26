@@ -48,6 +48,16 @@ metrics_generator:
     external_labels:
       source: pydantic-supervisor-stress
 
+metrics_generator_client:
+  grpc_client_config:
+    max_recv_msg_size: __TEMPO_INTERNAL_GRPC_MAX_MSG_SIZE__
+    max_send_msg_size: __TEMPO_INTERNAL_GRPC_MAX_MSG_SIZE__
+
+backend_scheduler_client:
+  grpc_client_config:
+    max_recv_msg_size: __TEMPO_INTERNAL_GRPC_MAX_MSG_SIZE__
+    max_send_msg_size: __TEMPO_INTERNAL_GRPC_MAX_MSG_SIZE__
+
 overrides:
   defaults:
     ingestion:
