@@ -41,6 +41,10 @@ apply_gateway_header_patch()
 
 DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
 DEFAULT_BRAINTRUST_DATASET = "Pydantic Supervisor Dataset"
+REMOTE_BASE_TASK_ONLY = (
+    os.environ.get("BRAINTRUST_REMOTE_BASE_TASK_ONLY", "0").lower()
+    in {"1", "true", "yes"}
+)
 
 configure_adk_tracing(
     api_key=os.environ.get("BRAINTRUST_API_KEY"),
@@ -596,17 +600,19 @@ def _register_eval():
                 },
             }
 
+    eval_scores = [] if REMOTE_BASE_TASK_ONLY else [
+        response_quality_scorer,
+        no_unnecessary_clarification_scorer,
+        routing_accuracy_scorer,
+        delegation_compliance_scorer,
+        step_efficiency_score,
+    ]
+
     Eval(
         project_name,
         data=get_eval_data(project_name),
         task=run_supervisor_task,
-        scores=[
-            response_quality_scorer,
-            no_unnecessary_clarification_scorer,
-            routing_accuracy_scorer,
-            delegation_compliance_scorer,
-            step_efficiency_score,
-        ],  # type: ignore
+        scores=eval_scores,  # type: ignore
         parameters={
             "system_prompt": SystemPromptParam,
             "prompt_modification": PromptModificationParam,

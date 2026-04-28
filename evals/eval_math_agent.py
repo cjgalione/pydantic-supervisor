@@ -31,6 +31,10 @@ configure_adk_tracing(
 
 DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
 DEFAULT_BRAINTRUST_DATASET = "Math Trace Dataset"
+REMOTE_BASE_TASK_ONLY = (
+    os.environ.get("BRAINTRUST_REMOTE_BASE_TASK_ONLY", "0").lower()
+    in {"1", "true", "yes"}
+)
 
 
 async def run_math_task(input: dict, hooks: Any = None) -> dict:
@@ -208,19 +212,20 @@ calculation_correctness_scorer = LLMClassifier(
 
 
 project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
+eval_scores = [] if REMOTE_BASE_TASK_ONLY else [
+    calculation_accuracy_scorer,
+    tool_usage_scorer,
+    efficiency_scorer,
+    response_format_scorer,
+    calculation_correctness_scorer,
+]
 
 Eval(
     project_name,
     experiment_name="math-agent",
     data=get_eval_data(project_name),
     task=run_math_task,
-    scores=[
-        calculation_accuracy_scorer,
-        tool_usage_scorer,
-        efficiency_scorer,
-        response_format_scorer,
-        calculation_correctness_scorer,
-    ],  # type: ignore
+    scores=eval_scores,  # type: ignore
     parameters={
         "math_agent_prompt": MathAgentPromptParam,
     },

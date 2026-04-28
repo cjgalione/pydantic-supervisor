@@ -34,6 +34,10 @@ configure_adk_tracing(
 
 DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
 DEFAULT_BRAINTRUST_DATASET = "Research Trace Dataset"
+REMOTE_BASE_TASK_ONLY = (
+    os.environ.get("BRAINTRUST_REMOTE_BASE_TASK_ONLY", "0").lower()
+    in {"1", "true", "yes"}
+)
 
 
 async def run_research_task(input: dict, hooks: Any = None) -> dict:
@@ -194,18 +198,19 @@ answer_quality_scorer = LLMClassifier(
 
 
 project_name = os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT)
+eval_scores = [] if REMOTE_BASE_TASK_ONLY else [
+    web_search_usage_scorer,
+    source_attribution_scorer,
+    efficiency_scorer,
+    answer_quality_scorer,
+]
 
 Eval(
     project_name,
     experiment_name="research-agent",
     data=get_eval_data(project_name),
     task=run_research_task,
-    scores=[
-        web_search_usage_scorer,
-        source_attribution_scorer,
-        efficiency_scorer,
-        answer_quality_scorer,
-    ],  # type: ignore
+    scores=eval_scores,  # type: ignore
     parameters={
         "research_agent_prompt": ResearchAgentPromptParam,
     },

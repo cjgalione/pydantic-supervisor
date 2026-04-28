@@ -207,6 +207,9 @@ def braintrust_eval_server():
     from src.config import AgentConfig
     from src.tracing import configure_adk_tracing
 
+    # Remote eval server should run base tasks only; pick scorers in Braintrust UI.
+    os.environ["BRAINTRUST_REMOTE_BASE_TASK_ONLY"] = "1"
+
     # Find all eval files in the evals directory
     # In Modal, the evals package is mounted and importable
     if hasattr(evals, "__path__") and evals.__path__:
