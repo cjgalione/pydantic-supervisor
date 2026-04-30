@@ -20,12 +20,22 @@ def _get_tavily_client() -> TavilyClient:
 def tavily_search(query: str, max_results: int = 3) -> str:
     """Search the web with Tavily and return summarized results with links."""
     limited_max_results = max(1, min(max_results, 5))
-    response: dict[str, Any] = _get_tavily_client().search(
-        query=query,
-        max_results=limited_max_results,
-        include_answer=True,
-        include_raw_content=False,
-    )
+    try:
+        response: dict[str, Any] = _get_tavily_client().search(
+            query=query,
+            max_results=limited_max_results,
+            include_answer=True,
+            include_raw_content=False,
+        )
+    except Exception as exc:
+        error_text = str(exc).strip()
+        lowered = error_text.lower()
+        if "usage limit" in lowered or "forbidden" in lowered:
+            return (
+                "Web search is temporarily unavailable because the Tavily quota is exhausted. "
+                "Proceed with a best-effort response and note that live sources could not be fetched."
+            )
+        return f"Web search failed: {error_text or type(exc).__name__}"
 
     lines: list[str] = []
     answer = response.get("answer")
