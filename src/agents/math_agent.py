@@ -6,7 +6,7 @@ from typing import Any, Callable
 from pydantic_ai import Agent
 from pint import UnitRegistry
 
-from src.config import DEFAULT_MATH_AGENT_PROMPT
+from src.config import DEFAULT_MATH_AGENT_PROMPT, DEFAULT_MATH_MODEL
 from src.modeling import resolve_model_name
 
 _UREG = UnitRegistry()
@@ -101,7 +101,7 @@ def _register_tools(agent: Agent, tools: list[Callable[..., Any]]) -> None:
 
 def get_math_agent(
     system_prompt: str | None = None,
-    model: str = "gemini-2.0-flash-lite",
+    model: str = DEFAULT_MATH_MODEL,
     extra_tools: list[Callable[..., Any]] | None = None,
 ) -> Agent:
     """Create the math agent with optional custom prompt and model."""

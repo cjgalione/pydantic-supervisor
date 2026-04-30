@@ -244,7 +244,13 @@ def braintrust_eval_server():
         project_id=os.environ.get("BRAINTRUST_PROJECT_ID"),
         project_name=os.environ.get("BRAINTRUST_PROJECT", "pydantic-supervisor"),
     )
-    supervisor = get_supervisor(force_rebuild=True)
+    supervisor = None
+
+    def _get_default_supervisor():
+        nonlocal supervisor
+        if supervisor is None:
+            supervisor = get_supervisor(force_rebuild=True)
+        return supervisor
 
     async def interactive_page(_: Request) -> HTMLResponse:
         html = """
@@ -311,7 +317,7 @@ def braintrust_eval_server():
         research_model = str(payload.get("research_model", "")).strip()
         math_model = str(payload.get("math_model", "")).strip()
 
-        selected_supervisor = supervisor
+        selected_supervisor = _get_default_supervisor()
         if supervisor_model or research_model or math_model:
             config = AgentConfig(
                 supervisor_model=supervisor_model or AgentConfig.model_fields["supervisor_model"].default,

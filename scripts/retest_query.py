@@ -23,7 +23,7 @@ from src.config import AgentConfig
 from src.tracing import configure_adk_tracing
 
 DEFAULT_PROJECT = "pydantic-supervisor"
-DEFAULT_SUPERVISOR_MODEL = "gemini-2.0-flash-lite"
+DEFAULT_SUPERVISOR_MODEL = "gpt-4.1-mini"
 
 
 def _coerce_value(value: str) -> Any:

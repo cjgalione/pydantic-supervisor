@@ -30,10 +30,10 @@ cp .env.example .env
 
 Required keys:
 
-- `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- `OPENAI_API_KEY` (default runtime model path)
 - `TAVILY_API_KEY`
 - `BRAINTRUST_API_KEY` (if tracing/evals)
-- `OPENAI_API_KEY` (used by judge scorers)
+- Judge scorers reuse `OPENAI_API_KEY`
 - Optional: `TRACE_PROFILE=full|lean` (default `full`)
   - `full`: Braintrust `setup_pydantic_ai(...)` auto-instrumentation (verbose)
   - `lean`: explicit app spans only (invocation, handoff, llm_response_generation, tool_routing_decision)

@@ -33,9 +33,19 @@ from src.helpers import extract_query_from_input
 # ---------------------------------------------------------------------------
 
 def get_judge_client() -> OpenAI:
-    """Build a judge client from current environment variables."""
+    """Build a judge client from current environment variables.
+
+    This is intentionally lazy so remote eval server startup does not require
+    OPENAI_API_KEY unless judge-based scorers are actually executed.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required only for judge-based scorers. "
+            "Set OPENAI_API_KEY or run evals without scorer execution."
+        )
     return OpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
+        api_key=api_key,
         default_headers={"x-bt-use-cache": "always"},
     )
 

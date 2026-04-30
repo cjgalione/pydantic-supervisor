@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 
-from src.modeling import ensure_google_api_keys
-
 DEFAULT_TRACE_PROFILE = "full"
 _last_setup_signature: tuple[str, str, str, str] | None = None
 
@@ -34,8 +32,6 @@ def configure_pydantic_tracing(
 
     if not api_key:
         return
-
-    ensure_google_api_keys()
 
     signature = (
         get_trace_profile(),

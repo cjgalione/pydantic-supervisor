@@ -2,6 +2,7 @@
 
 from pydantic_ai import Agent
 
+from src.config import DEFAULT_SUPERVISOR_MODEL
 from src.modeling import resolve_model_name
 
 DEFAULT_CRITIC_AGENT_PROMPT = (
@@ -18,7 +19,7 @@ DEFAULT_CRITIC_AGENT_PROMPT = (
 
 def get_critic_agent(
     system_prompt: str | None = None,
-    model: str = "gemini-2.0-flash-lite",
+    model: str = DEFAULT_SUPERVISOR_MODEL,
 ) -> Agent:
     """Create the critic agent."""
     prompt = system_prompt if system_prompt is not None else DEFAULT_CRITIC_AGENT_PROMPT

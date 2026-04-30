@@ -40,8 +40,6 @@ jobs:
 
       - name: Run queries
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           BRAINTRUST_PROJECT: pydantic-supervisor
           BRAINTRUST_ORG_NAME: Braintrust Demos
@@ -58,8 +56,8 @@ jobs:
           BASE_RETRY_SECONDS: 15
           INTER_QUESTION_DELAY_SECONDS: 2
           TRACE_PROFILE: full
-          MODEL_POOL: ${{ github.event.inputs.model_pool || 'gemini-2.0-flash-lite' }}
-          QUESTION_SOURCE: ${{ github.event.inputs.question_source || 'generated' }}
+          MODEL_POOL: ${{ github.event.inputs.model_pool || 'gpt-4.1-mini' }}
+          QUESTION_SOURCE: ${{ github.event.inputs.question_source || 'bank' }}
           PER_QUESTION_TIMEOUT_SECONDS: ${{ github.event.inputs.per_question_timeout_seconds || '120' }}
         run: |
           uv run python scripts/run_queries.py --num-questions "$NUM_QUESTIONS"

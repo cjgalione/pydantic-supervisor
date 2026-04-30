@@ -3,7 +3,6 @@
 
 import argparse
 import asyncio
-import json
 import os
 import random
 import re
@@ -12,7 +11,6 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from google import genai
 
 DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
 
@@ -23,14 +21,11 @@ if str(project_root) not in sys.path:
 
 from src.config import AgentConfig
 from src.agent_graph import run_supervisor_with_critic
-from src.modeling import ensure_google_api_keys, get_google_api_key
 from src.tracing import configure_adk_tracing
 
 load_dotenv()
-ensure_google_api_keys()
 
-DEFAULT_MODEL_POOL = ["gemini-2.0-flash-lite"]
-QUESTION_GENERATOR_MODEL = "gemini-2.0-flash-lite"
+DEFAULT_MODEL_POOL = ["gpt-4.1-mini"]
 
 QUESTION_BANK = [
     "What is 37 * 24?",
@@ -49,21 +44,6 @@ QUESTION_BANK = [
     "Who discovered penicillin and in what year?",
     "What is (48 + 72) / 6?",
 ]
-
-
-def _extract_json_array(text: str) -> list[str]:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3 and lines[-1].strip() == "```":
-            text = "\n".join(lines[1:-1]).strip()
-            if text.startswith("json"):
-                text = text[4:].strip()
-
-    parsed = json.loads(text)
-    if not isinstance(parsed, list) or not all(isinstance(q, str) for q in parsed):
-        raise RuntimeError("Question generator did not return a JSON array of strings")
-    return parsed
 
 
 def _fallback_questions(num_questions: int, rng: random.Random) -> list[str]:
@@ -115,55 +95,13 @@ def _parse_model_pool(raw_model_pool: str | None) -> list[str]:
 
 
 def generate_questions(num_questions: int, seed: Optional[int] = None) -> list[str]:
-    """Generate realistic, varied questions with Gemini."""
+    """Generate realistic, varied questions from the local bank."""
     rng = random.Random(seed)
-    api_key = get_google_api_key()
-    if not api_key:
-        raise RuntimeError("Missing GEMINI_API_KEY/GOOGLE_API_KEY in environment")
-
-    client = genai.Client(api_key=api_key)
-    prompt = f"""Generate exactly {num_questions} realistic user questions that test an AI multi-agent system.
-
-Create a diverse mix of:
-- Pure math questions
-- Pure research questions
-- Hybrid questions (research + math)
-- Edge cases (ambiguous, conversational, frustrated)
-
-Output requirements:
-- Return ONLY a valid JSON array of strings
-- No markdown, no explanation
-- Keep each question under 200 characters
-"""
-    try:
-        response = client.models.generate_content(
-            model=QUESTION_GENERATOR_MODEL,
-            contents=prompt,
-        )
-        text = (response.text or "").strip()
-        questions = _extract_json_array(text)
-        rng.shuffle(questions)
-        return questions[:num_questions]
-    except Exception:
-        return _fallback_questions(num_questions=num_questions, rng=rng)
+    return _fallback_questions(num_questions=num_questions, rng=rng)
 
 
 def _quota_preflight_ok() -> tuple[bool, str]:
-    api_key = get_google_api_key()
-    if not api_key:
-        return False, "Missing GEMINI_API_KEY/GOOGLE_API_KEY in environment"
-
-    client = genai.Client(api_key=api_key)
-    try:
-        client.models.generate_content(
-            model=QUESTION_GENERATOR_MODEL,
-            contents="Reply with exactly: OK",
-        )
-        return True, ""
-    except Exception as exc:
-        if _is_hard_quota_exhausted(exc):
-            return False, str(exc)
-        return True, ""
+    return True, ""
 
 
 async def run_question(
@@ -336,18 +274,18 @@ def main() -> None:
         "--quota-preflight",
         action=argparse.BooleanOptionalAction,
         default=os.environ.get("QUOTA_PREFLIGHT", "1") != "0",
-        help="Run a lightweight Gemini call before batch and skip run if daily quota is exhausted",
+        help="Run preflight checks before processing batches",
     )
     parser.add_argument(
         "--model-pool",
         default=os.environ.get("MODEL_POOL", ",".join(DEFAULT_MODEL_POOL)),
-        help="Comma-separated model IDs to sample from (default: gemini-2.0-flash-lite)",
+        help="Comma-separated model IDs to sample from (default: gpt-4.1-mini)",
     )
     parser.add_argument(
         "--question-source",
         choices=("generated", "bank"),
         default=os.environ.get("QUESTION_SOURCE", "generated"),
-        help="Question source: generated (Gemini) or bank (deterministic local set)",
+        help="Question source: generated (local) or bank (deterministic local set)",
     )
     parser.add_argument(
         "--per-question-timeout-seconds",

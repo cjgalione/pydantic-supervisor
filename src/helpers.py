@@ -8,7 +8,6 @@ from typing import Any
 
 from braintrust import SpanTypeAttribute, start_span
 
-from src.modeling import ensure_google_api_keys
 from src.tracing import get_trace_profile
 
 
@@ -179,8 +178,6 @@ async def run_pydantic_agent(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """Run a PydanticAI agent and return final text plus serialized messages."""
-    ensure_google_api_keys()
-
     uid = user_id or "eval-user"
     sid = session_id or f"session-{uuid.uuid4().hex}"
 

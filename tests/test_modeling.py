@@ -10,24 +10,17 @@ from pydantic_ai import Agent
 
 from src.modeling import (
     DEFAULT_BRAINTRUST_GATEWAY_BASE_URL,
-    DEFAULT_GOOGLE_MODEL,
-    GOOGLE_PROVIDER_PREFIX,
+    DEFAULT_OPENAI_MODEL,
+    OPENAI_PROVIDER_PREFIX,
     resolve_model_name,
 )
 
 
 class ResolveModelNameTests(unittest.TestCase):
     @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
-    def test_default_model_uses_google_provider(self) -> None:
+    def test_default_model_uses_openai_provider(self) -> None:
         resolved = resolve_model_name(None)
-        self.assertEqual(resolved, f"{GOOGLE_PROVIDER_PREFIX}:{DEFAULT_GOOGLE_MODEL}")
-
-    @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
-    def test_gemini_model_gets_google_prefix(self) -> None:
-        self.assertEqual(
-            resolve_model_name("gemini-2.0-flash-lite"),
-            "google-gla:gemini-2.0-flash-lite",
-        )
+        self.assertEqual(resolved, f"{OPENAI_PROVIDER_PREFIX}:{DEFAULT_OPENAI_MODEL}")
 
     @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
     def test_gpt_model_gets_openai_prefix(self) -> None:
@@ -62,8 +55,6 @@ class AgentInstantiationTests(unittest.TestCase):
             os.environ,
             {
                 "OPENAI_API_KEY": "unit-test-key",
-                "GOOGLE_API_KEY": "",
-                "GEMINI_API_KEY": "",
                 "BRAINTRUST_API_KEY": "",
             },
             clear=False,

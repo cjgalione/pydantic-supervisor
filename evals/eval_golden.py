@@ -59,6 +59,10 @@ apply_gateway_header_patch()
 
 DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
 DEFAULT_BRAINTRUST_DATASET = "Golden Dataset"
+REMOTE_BASE_TASK_ONLY = (
+    os.environ.get("BRAINTRUST_REMOTE_BASE_TASK_ONLY", "0").lower()
+    in {"1", "true", "yes"}
+)
 
 configure_adk_tracing(
     api_key=os.environ.get("BRAINTRUST_API_KEY"),
@@ -395,6 +399,8 @@ def _register_eval():
     ]
     if step_efficiency_score is not None:
         scorers.append(step_efficiency_score)
+    if REMOTE_BASE_TASK_ONLY:
+        scorers = []
 
     Eval(
         project_name,

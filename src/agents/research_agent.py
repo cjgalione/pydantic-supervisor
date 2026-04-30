@@ -6,7 +6,7 @@ from typing import Any, Callable
 from pydantic_ai import Agent
 from tavily import TavilyClient
 
-from src.config import DEFAULT_RESEARCH_AGENT_PROMPT
+from src.config import DEFAULT_RESEARCH_AGENT_PROMPT, DEFAULT_RESEARCH_MODEL
 from src.modeling import resolve_model_name
 
 
@@ -59,7 +59,7 @@ def _register_tools(agent: Agent, tools: list[Callable[..., Any]]) -> None:
 
 def get_research_agent(
     system_prompt: str | None = None,
-    model: str = "gemini-2.0-flash-lite",
+    model: str = DEFAULT_RESEARCH_MODEL,
     extra_tools: list[Callable[..., Any]] | None = None,
 ) -> Agent:
     """Create the research agent with optional custom prompt and model."""

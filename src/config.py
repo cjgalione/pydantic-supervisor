@@ -80,9 +80,9 @@ DEFAULT_MATH_AGENT_PROMPT = (
 )
 
 # Default model names
-DEFAULT_SUPERVISOR_MODEL = "gemini-2.0-flash-lite"
-DEFAULT_RESEARCH_MODEL = "gemini-2.0-flash-lite"
-DEFAULT_MATH_MODEL = "gemini-2.0-flash-lite"
+DEFAULT_SUPERVISOR_MODEL = "gpt-4.1-mini"
+DEFAULT_RESEARCH_MODEL = "gpt-4.1-mini"
+DEFAULT_MATH_MODEL = "gpt-4.1-mini"
 
 
 class AgentConfig(BaseModel):

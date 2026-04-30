@@ -11,7 +11,7 @@ from rich.prompt import Prompt
 from rich.text import Text
 
 from src.agent_graph import get_supervisor, run_supervisor_with_critic
-from src.modeling import ensure_google_api_keys, get_google_api_key
+from src.modeling import get_openai_api_key
 from src.tracing import configure_adk_tracing
 
 DEFAULT_BRAINTRUST_PROJECT = "pydantic-supervisor"
@@ -24,10 +24,8 @@ def _set_if_undefined(var: str) -> None:
 
 async def _run_chat() -> None:
     load_dotenv()
-    ensure_google_api_keys()
-    if not get_google_api_key():
-        _set_if_undefined("GEMINI_API_KEY")
-        ensure_google_api_keys()
+    if not get_openai_api_key():
+        _set_if_undefined("OPENAI_API_KEY")
     _set_if_undefined("TAVILY_API_KEY")
 
     if os.environ.get("BRAINTRUST_API_KEY"):
