@@ -37,6 +37,20 @@ jobs:
         with:
             python-version-file: ".python-version"
 
+      - name: Validate required secrets
+        env:
+          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          missing=0
+          for name in BRAINTRUST_API_KEY TAVILY_API_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Install dependencies with uv
         run: uv pip install -r requirements.txt --system
 
@@ -58,8 +72,9 @@ jobs:
           BASE_RETRY_SECONDS: 15
           INTER_QUESTION_DELAY_SECONDS: 2
           TRACE_PROFILE: full
+          BRAINTRUST_SYNC_FLUSH: 1
           MODEL_POOL: ${{ github.event.inputs.model_pool || 'gpt-4.1-mini' }}
           QUESTION_SOURCE: ${{ github.event.inputs.question_source || 'bank' }}
           PER_QUESTION_TIMEOUT_SECONDS: ${{ github.event.inputs.per_question_timeout_seconds || '120' }}
         run: |
-          uv run python scripts/run_queries.py --num-questions "$NUM_QUESTIONS"
+          uv run python scripts/run_queries.py --num-questions "$NUM_QUESTIONS" --fail-on-error

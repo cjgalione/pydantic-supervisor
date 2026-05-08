@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 DEFAULT_TRACE_PROFILE = "full"
-_last_setup_signature: tuple[str, str, str, str] | None = None
+_last_setup_signature: tuple[str, str, str, str, str] | None = None
 
 
 def get_trace_profile() -> str:
@@ -22,6 +22,7 @@ def configure_pydantic_tracing(
     api_key: str | None,
     project_id: str | None,
     project_name: str | None,
+    org_name: str | None = None,
 ) -> None:
     """Configure tracing based on profile.
 
@@ -38,6 +39,7 @@ def configure_pydantic_tracing(
         api_key,
         project_id or "",
         project_name or "",
+        org_name or "",
     )
     if _last_setup_signature == signature:
         return
@@ -59,6 +61,7 @@ def configure_pydantic_tracing(
         api_key=api_key,
         project=project_name,
         project_id=project_id,
+        org_name=org_name,
     )
 
     if use_pydantic_auto_instrumentation() and setup_pydantic_ai is not None:
@@ -77,9 +80,11 @@ def configure_adk_tracing(
     api_key: str | None,
     project_id: str | None,
     project_name: str | None,
+    org_name: str | None = None,
 ) -> None:
     configure_pydantic_tracing(
         api_key=api_key,
         project_id=project_id,
         project_name=project_name,
+        org_name=org_name,
     )

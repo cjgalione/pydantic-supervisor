@@ -300,9 +300,16 @@ def main() -> None:
             api_key=os.environ.get("BRAINTRUST_API_KEY"),
             project_id=os.environ.get("BRAINTRUST_PROJECT_ID"),
             project_name=os.environ.get("BRAINTRUST_PROJECT", DEFAULT_BRAINTRUST_PROJECT),
+            org_name=os.environ.get("BRAINTRUST_ORG_NAME"),
         )
 
-    asyncio.run(main_async(args))
+    try:
+        asyncio.run(main_async(args))
+    finally:
+        if os.environ.get("BRAINTRUST_API_KEY"):
+            from braintrust import flush
+
+            flush()
 
 
 if __name__ == "__main__":
