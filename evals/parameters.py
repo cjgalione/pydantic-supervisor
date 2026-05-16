@@ -6,6 +6,8 @@ playground can render prompt editors with model selection instead of plain text
 inputs. Plain scalar parameters continue to use single-field Pydantic models.
 """
 
+from __future__ import annotations
+
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -18,6 +20,24 @@ from src.config import (
     DEFAULT_SUPERVISOR_MODEL,
     DEFAULT_SYSTEM_PROMPT,
 )
+
+
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _string_value(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("model", "model_name", "name", "slug", "id"):
+            nested = _string_value(value.get(key))
+            if nested:
+                return nested
+    return None
+
 
 def _prompt_parameter(*, prompt: str, model: str, description: str) -> dict[str, Any]:
     """Build a Braintrust prompt parameter with a default system prompt and model."""
@@ -36,6 +56,7 @@ def _prompt_parameter(*, prompt: str, model: str, description: str) -> dict[str,
             },
             "options": {
                 "model": model,
+                "provider": "openai",
             },
         },
     }
@@ -54,14 +75,16 @@ def extract_prompt_and_model(
     prompt_text = default_prompt
     model_name = default_model
 
-    prompt_block = getattr(param, "prompt", None)
+    prompt_block = _get_value(param, "prompt")
+    if prompt_block is None:
+        prompt_block = param
     if prompt_block is not None:
-        messages = getattr(prompt_block, "messages", None) or []
+        messages = _get_value(prompt_block, "messages") or []
         for message in messages:
-            if getattr(message, "role", None) != "system":
+            if _get_value(message, "role") != "system":
                 continue
 
-            content = getattr(message, "content", None)
+            content = _get_value(message, "content")
             if isinstance(content, str):
                 prompt_text = content
                 break
@@ -69,17 +92,25 @@ def extract_prompt_and_model(
             if isinstance(content, list):
                 text_parts: list[str] = []
                 for part in content:
-                    text = getattr(part, "text", None)
+                    text = _get_value(part, "text")
                     if isinstance(text, str) and text:
                         text_parts.append(text)
                 if text_parts:
                     prompt_text = "\n".join(text_parts)
                     break
 
-    options = getattr(param, "options", None) or {}
-    if isinstance(options, dict):
-        maybe_model = options.get("model")
-        if isinstance(maybe_model, str) and maybe_model.strip():
+    options = _get_value(param, "options") or {}
+    maybe_model = _string_value(_get_value(options, "model"))
+    if maybe_model is None:
+        maybe_model = _string_value(_get_value(param, "model"))
+
+    if maybe_model:
+        maybe_provider = _string_value(_get_value(options, "provider"))
+        if maybe_provider is None:
+            maybe_provider = _string_value(_get_value(param, "provider"))
+        if maybe_provider and ":" not in maybe_model:
+            model_name = f"{maybe_provider}:{maybe_model}"
+        else:
             model_name = maybe_model
 
     return prompt_text, model_name

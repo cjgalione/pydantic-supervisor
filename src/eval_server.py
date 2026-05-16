@@ -62,6 +62,20 @@ def _is_allowed_origin(origin: str) -> bool:
 def _with_playground_cors(inner_app: Any) -> Any:
     """Wrap the Braintrust devserver so browser preflights are handled explicitly."""
 
+    def _decode_header(headers: dict[bytes, bytes], name: bytes) -> str | None:
+        value = headers.get(name)
+        if not value:
+            return None
+        decoded = value.decode("utf-8").strip()
+        return decoded or None
+
+    def _extract_bearer_token(value: str | None) -> str | None:
+        if not value:
+            return None
+        if value.lower().startswith("bearer "):
+            return value[7:].strip() or None
+        return value
+
     def _with_path_alias(scope: dict[str, Any]) -> dict[str, Any]:
         # Newer playground clients may call /runs; Braintrust devserver still serves /eval.
         if scope.get("type") == "http" and scope.get("path") == "/runs":
@@ -82,42 +96,64 @@ def _with_playground_cors(inner_app: Any) -> Any:
             return
 
         headers = dict(scope.get("headers", []))
+        auth_token = _decode_header(headers, b"x-bt-auth-token")
+        if auth_token == "null":
+            auth_token = None
+        auth_token = auth_token or _extract_bearer_token(
+            _decode_header(headers, b"authorization")
+        )
+        project_id = _decode_header(headers, b"x-bt-project-id")
+        org_name = _decode_header(headers, b"x-bt-org-name")
+
+        from src.modeling import (
+            reset_braintrust_gateway_context,
+            set_braintrust_gateway_context,
+        )
+
+        context_tokens = set_braintrust_gateway_context(
+            api_key=auth_token,
+            project_id=project_id,
+            org_name=org_name,
+        )
         origin = headers.get(b"origin", b"").decode("utf-8")
-        if not origin or not _is_allowed_origin(origin):
-            await inner_app(scope, receive, send)
-            return
+        try:
+            if not origin or not _is_allowed_origin(origin):
+                await inner_app(scope, receive, send)
+                return
 
-        cors_headers = [
-            (b"access-control-allow-origin", origin.encode()),
-            (b"access-control-allow-methods", b"GET, POST, PUT, DELETE, OPTIONS, PATCH"),
-            (b"access-control-allow-headers", ", ".join(CORS_ALLOWED_HEADERS).encode()),
-            (b"access-control-expose-headers", ", ".join(CORS_EXPOSED_HEADERS).encode()),
-            (b"access-control-allow-credentials", b"true"),
-            (b"access-control-max-age", b"86400"),
-        ]
+            cors_headers = [
+                (b"access-control-allow-origin", origin.encode()),
+                (b"access-control-allow-methods", b"GET, POST, PUT, DELETE, OPTIONS, PATCH"),
+                (b"access-control-allow-headers", ", ".join(CORS_ALLOWED_HEADERS).encode()),
+                (b"access-control-expose-headers", ", ".join(CORS_EXPOSED_HEADERS).encode()),
+                (b"access-control-allow-credentials", b"true"),
+                (b"access-control-max-age", b"86400"),
+            ]
 
-        if scope["method"] == "OPTIONS":
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": cors_headers,
-                }
-            )
-            await send({"type": "http.response.body", "body": b""})
-            return
+            if scope["method"] == "OPTIONS":
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": cors_headers,
+                    }
+                )
+                await send({"type": "http.response.body", "body": b""})
+                return
 
-        async def send_with_cors(message: dict[str, Any]) -> None:
-            if message["type"] == "http.response.start":
-                header_pairs = list(message.get("headers", []))
-                existing = {key.lower() for key, _ in header_pairs}
-                for key, value in cors_headers:
-                    if key.lower() not in existing:
-                        header_pairs.append((key, value))
-                message["headers"] = header_pairs
-            await send(message)
+            async def send_with_cors(message: dict[str, Any]) -> None:
+                if message["type"] == "http.response.start":
+                    header_pairs = list(message.get("headers", []))
+                    existing = {key.lower() for key, _ in header_pairs}
+                    for key, value in cors_headers:
+                        if key.lower() not in existing:
+                            header_pairs.append((key, value))
+                    message["headers"] = header_pairs
+                await send(message)
 
-        await inner_app(scope, receive, send_with_cors)
+            await inner_app(scope, receive, send_with_cors)
+        finally:
+            reset_braintrust_gateway_context(context_tokens)
 
     return wrapped
 
