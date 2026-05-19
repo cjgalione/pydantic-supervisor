@@ -148,6 +148,15 @@ def _extract_float_from_text(text: str) -> float | None:
 def _fallback_numeric_from_operation_text(operation: str) -> float | None:
     lowered = operation.lower()
 
+    square_root = re.search(
+        r"(?:square\s+root|sqrt)\s+(?:of\s+)?(-?[0-9]+(?:\.[0-9]+)?)",
+        lowered,
+    )
+    if square_root:
+        value = float(square_root.group(1))
+        if value >= 0:
+            return math.sqrt(value)
+
     sphere = re.search(r"volume of a sphere.*radius\s*([0-9]+(?:\.[0-9]+)?)", lowered)
     if sphere:
         r = float(sphere.group(1))
@@ -159,6 +168,24 @@ def _fallback_numeric_from_operation_text(operation: str) -> float | None:
         return math.pi * (r**2)
 
     return None
+
+
+def _format_fallback_math_response(operation: str, result: float, result_mode: str) -> str:
+    if result_mode == "numeric":
+        return str(result)
+
+    lowered = operation.lower()
+    square_root = re.search(
+        r"(?:square\s+root|sqrt)\s+(?:of\s+)?(-?[0-9]+(?:\.[0-9]+)?)",
+        lowered,
+    )
+    if square_root:
+        value = float(square_root.group(1))
+        value_text = str(int(value)) if value.is_integer() else str(value)
+        result_text = str(int(result)) if result.is_integer() else str(result)
+        return f"The square root of {value_text} is {result_text}."
+
+    return str(result)
 
 
 def _safe_eval_numeric_expression(expression: str) -> float | None:
@@ -457,6 +484,10 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
             input_payload["b"] = b
             metadata_input["b"] = b
 
+        fallback_result = _fallback_numeric_from_operation_text(resolved_operation)
+        if fallback_result is None:
+            fallback_result = _safe_eval_numeric_expression(resolved_operation)
+
         with start_span(
             name="handoff [MathAgent]",
             type=SpanTypeAttribute.TASK,
@@ -466,6 +497,34 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
                 input_data=metadata_input,
             ),
         ) as handoff_span:
+            if fallback_result is not None:
+                response_text = _format_fallback_math_response(
+                    operation=resolved_operation,
+                    result=fallback_result,
+                    result_mode=result_mode,
+                )
+                handoff_span.log(
+                    output={
+                        "final_output": response_text,
+                        "parsed_result": fallback_result,
+                        "result_mode": result_mode,
+                        "returned_response": response_text,
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": response_text,
+                            }
+                        ],
+                        "fallback": "deterministic_math",
+                    }
+                )
+                return {
+                    "final_output": response_text,
+                    "parsed_result": fallback_result,
+                    "returned_response": response_text,
+                    "messages": [{"role": "assistant", "content": response_text}],
+                }
+
             result = await run_pydantic_agent(
                 agent=math_agent,
                 query=query,
