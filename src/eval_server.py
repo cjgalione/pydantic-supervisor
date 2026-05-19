@@ -48,6 +48,25 @@ CORS_EXPOSED_HEADERS = [
 ]
 
 
+def _asgi_header_bytes(value: Any) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, str):
+        return value.encode("latin-1")
+    return bytes(value)
+
+
+def _normalize_asgi_headers(raw_headers: Any) -> dict[bytes, bytes]:
+    return {
+        _asgi_header_bytes(name).lower(): _asgi_header_bytes(value)
+        for name, value in raw_headers
+    }
+
+
 def _is_allowed_origin(origin: str) -> bool:
     if not origin:
         return False
@@ -95,7 +114,7 @@ def _with_playground_cors(inner_app: Any) -> Any:
             await inner_app(scope, receive, send)
             return
 
-        headers = dict(scope.get("headers", []))
+        headers = _normalize_asgi_headers(scope.get("headers", []))
         auth_token = _decode_header(headers, b"x-bt-auth-token")
         if auth_token == "null":
             auth_token = None
