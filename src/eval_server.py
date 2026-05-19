@@ -61,10 +61,14 @@ def _asgi_header_bytes(value: Any) -> bytes:
 
 
 def _normalize_asgi_headers(raw_headers: Any) -> dict[bytes, bytes]:
-    return {
-        _asgi_header_bytes(name).lower(): _asgi_header_bytes(value)
+    return dict(_normalize_asgi_header_pairs(raw_headers))
+
+
+def _normalize_asgi_header_pairs(raw_headers: Any) -> list[tuple[bytes, bytes]]:
+    return [
+        (_asgi_header_bytes(name).lower(), _asgi_header_bytes(value))
         for name, value in raw_headers
-    }
+    ]
 
 
 def _is_allowed_origin(origin: str) -> bool:
@@ -114,7 +118,9 @@ def _with_playground_cors(inner_app: Any) -> Any:
             await inner_app(scope, receive, send)
             return
 
-        headers = _normalize_asgi_headers(scope.get("headers", []))
+        header_pairs = _normalize_asgi_header_pairs(scope.get("headers", []))
+        scope = {**scope, "headers": header_pairs}
+        headers = dict(header_pairs)
         auth_token = _decode_header(headers, b"x-bt-auth-token")
         if auth_token == "null":
             auth_token = None
