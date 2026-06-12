@@ -5,6 +5,7 @@ from src.agents.deep_agent import (
     _fallback_unit_conversion_from_operation_text,
     _format_fallback_math_response,
     _format_fallback_unit_conversion_response,
+    _query_needs_math_handoff,
 )
 from src.agents.math_agent import convert_units
 
@@ -58,3 +59,7 @@ def test_format_fallback_unit_conversion_response() -> None:
     )
 
     assert response == "1e+06 joules is approximately 1341.02 horsepower-seconds."
+
+
+def test_unit_conversion_query_requires_math_handoff() -> None:
+    assert _query_needs_math_handoff("Convert 10^6 joules to horsepower-seconds.")
