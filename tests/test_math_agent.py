@@ -1,6 +1,11 @@
 import math
 
-from src.agents.deep_agent import _fallback_numeric_from_operation_text, _format_fallback_math_response
+from src.agents.deep_agent import (
+    _fallback_numeric_from_operation_text,
+    _fallback_unit_conversion_from_operation_text,
+    _format_fallback_math_response,
+    _format_fallback_unit_conversion_response,
+)
 from src.agents.math_agent import convert_units
 
 
@@ -34,3 +39,22 @@ def test_format_fallback_math_response_for_square_root() -> None:
         "explanatory",
     )
     assert response == "The square root of 2025 is 45."
+
+
+def test_fallback_unit_conversion_handles_scheduled_horsepower_seconds_query() -> None:
+    result = _fallback_unit_conversion_from_operation_text(
+        "Convert 10^6 joules to horsepower-seconds."
+    )
+
+    assert result is not None
+    assert math.isclose(result, 1341.0220895950278, rel_tol=1e-9)
+
+
+def test_format_fallback_unit_conversion_response() -> None:
+    response = _format_fallback_unit_conversion_response(
+        "Convert 10^6 joules to horsepower-seconds.",
+        1341.0220895950278,
+        "explanatory",
+    )
+
+    assert response == "1e+06 joules is approximately 1341.02 horsepower-seconds."

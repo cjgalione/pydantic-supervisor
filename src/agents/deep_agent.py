@@ -12,7 +12,7 @@ from braintrust import SpanTypeAttribute, start_span
 from pydantic_ai import Agent
 
 from src.agents.critic_agent import get_critic_agent
-from src.agents.math_agent import add, divide, get_math_agent, multiply, subtract
+from src.agents.math_agent import add, convert_units, divide, get_math_agent, multiply, subtract
 from src.agents.research_agent import get_research_agent
 from src.config import AgentConfig
 from src.helpers import run_pydantic_agent
@@ -170,6 +170,18 @@ def _fallback_numeric_from_operation_text(operation: str) -> float | None:
     return None
 
 
+def _fallback_unit_conversion_from_operation_text(operation: str) -> float | None:
+    conversion = _parse_conversion_operation(operation)
+    if conversion is None:
+        return None
+
+    value, from_unit, to_unit = conversion
+    try:
+        return convert_units(value, from_unit, to_unit)
+    except Exception:
+        return None
+
+
 def _format_fallback_math_response(operation: str, result: float, result_mode: str) -> str:
     if result_mode == "numeric":
         return str(result)
@@ -186,6 +198,22 @@ def _format_fallback_math_response(operation: str, result: float, result_mode: s
         return f"The square root of {value_text} is {result_text}."
 
     return str(result)
+
+
+def _format_fallback_unit_conversion_response(
+    operation: str,
+    result: float,
+    result_mode: str,
+) -> str:
+    if result_mode == "numeric":
+        return str(result)
+
+    conversion = _parse_conversion_operation(operation)
+    if conversion is None:
+        return str(result)
+
+    value, from_unit, to_unit = conversion
+    return f"{value:g} {from_unit} is approximately {result:g} {to_unit.rstrip('.')}."
 
 
 def _safe_eval_numeric_expression(expression: str) -> float | None:
@@ -484,7 +512,10 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
             input_payload["b"] = b
             metadata_input["b"] = b
 
-        fallback_result = _fallback_numeric_from_operation_text(resolved_operation)
+        conversion_fallback = _fallback_unit_conversion_from_operation_text(resolved_operation)
+        fallback_result = conversion_fallback
+        if fallback_result is None:
+            fallback_result = _fallback_numeric_from_operation_text(resolved_operation)
         if fallback_result is None:
             fallback_result = _safe_eval_numeric_expression(resolved_operation)
 
@@ -498,11 +529,20 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
             ),
         ) as handoff_span:
             if fallback_result is not None:
-                response_text = _format_fallback_math_response(
-                    operation=resolved_operation,
-                    result=fallback_result,
-                    result_mode=result_mode,
-                )
+                if conversion_fallback is not None:
+                    response_text = _format_fallback_unit_conversion_response(
+                        operation=resolved_operation,
+                        result=fallback_result,
+                        result_mode=result_mode,
+                    )
+                    fallback_kind = "deterministic_unit_conversion"
+                else:
+                    response_text = _format_fallback_math_response(
+                        operation=resolved_operation,
+                        result=fallback_result,
+                        result_mode=result_mode,
+                    )
+                    fallback_kind = "deterministic_math"
                 handoff_span.log(
                     output={
                         "final_output": response_text,
@@ -515,7 +555,7 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
                                 "content": response_text,
                             }
                         ],
-                        "fallback": "deterministic_math",
+                        "fallback": fallback_kind,
                     }
                 )
                 return {
