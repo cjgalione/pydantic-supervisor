@@ -3,10 +3,13 @@
 
 import argparse
 import asyncio
+import json
 import os
 import random
 import re
 import sys
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -19,13 +22,19 @@ project_root = Path(__file__).resolve().parents[1]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.config import AgentConfig
-from src.agent_graph import run_supervisor_with_critic
-from src.tracing import configure_adk_tracing
+from src.agent_graph import run_supervisor_with_critic  # noqa: E402
+from src.config import AgentConfig  # noqa: E402
+from src.tracing import configure_adk_tracing  # noqa: E402
 
 load_dotenv()
 
 DEFAULT_MODEL_POOL = ["gpt-4.1-mini"]
+FAILURE_TIMEOUT = "timeout"
+FAILURE_QUOTA = "quota"
+FAILURE_UNIT_CONVERSION = "unit_conversion"
+FAILURE_PROVIDER_GATEWAY = "provider_gateway"
+FAILURE_RESEARCH = "research"
+FAILURE_UNEXPECTED = "unexpected"
 
 QUESTION_BANK = [
     "What is 37 * 24?",
@@ -44,6 +53,18 @@ QUESTION_BANK = [
     "Who discovered penicillin and in what year?",
     "What is (48 + 72) / 6?",
 ]
+
+
+@dataclass
+class QuestionResult:
+    question: str
+    ok: bool
+    hard_stop: bool = False
+    failure_category: str | None = None
+    error: str | None = None
+    model: str | None = None
+    attempts: int = 1
+    final_output_preview: str = ""
 
 
 def _fallback_questions(num_questions: int, rng: random.Random) -> list[str]:
@@ -83,6 +104,59 @@ def _retry_delay_seconds(exc: Exception) -> float | None:
     return None
 
 
+def _classify_failure(error_text: str) -> str:
+    lowered = error_text.lower()
+
+    if "timed out" in lowered or "timeout" in lowered:
+        return FAILURE_TIMEOUT
+
+    if any(
+        marker in lowered
+        for marker in (
+            "resource_exhausted",
+            "quota exceeded",
+            "error code 429",
+            "ratelimit",
+            "rate limit",
+            "generaterequestsperday",
+        )
+    ):
+        return FAILURE_QUOTA
+
+    if any(
+        marker in lowered
+        for marker in (
+            "parserhelper",
+            "unit registry",
+            "undefinedunit",
+            "pint",
+            "horsepower_second",
+            "unsupported operand type(s) for -",
+        )
+    ):
+        return FAILURE_UNIT_CONVERSION
+
+    if any(
+        marker in lowered
+        for marker in (
+            "gateway",
+            "openai",
+            "provider",
+            "api status",
+            "apierror",
+            "badrequest",
+            "connection error",
+            "connectionerror",
+        )
+    ):
+        return FAILURE_PROVIDER_GATEWAY
+
+    if any(marker in lowered for marker in ("tavily", "web search", "search failed")):
+        return FAILURE_RESEARCH
+
+    return FAILURE_UNEXPECTED
+
+
 def _parse_model_pool(raw_model_pool: str | None) -> list[str]:
     if not raw_model_pool:
         return DEFAULT_MODEL_POOL.copy()
@@ -100,6 +174,93 @@ def generate_questions(num_questions: int, seed: Optional[int] = None) -> list[s
     return _fallback_questions(num_questions=num_questions, rng=rng)
 
 
+def _select_questions(
+    *,
+    num_questions: int | None,
+    question_source: str,
+    seed: int | None,
+) -> list[str]:
+    resolved_num_questions = num_questions if num_questions is not None else random.randint(1, 100)
+    rng = random.Random(seed)
+    if question_source == "bank":
+        return _fallback_questions(num_questions=resolved_num_questions, rng=rng)
+    return generate_questions(num_questions=resolved_num_questions, seed=seed)
+
+
+def _build_summary(results: list[QuestionResult]) -> dict[str, object]:
+    failures = [result for result in results if not result.ok]
+    successes = len(results) - len(failures)
+    category_counts = Counter(
+        result.failure_category or FAILURE_UNEXPECTED for result in failures
+    )
+
+    failures_by_question: dict[str, list[QuestionResult]] = defaultdict(list)
+    for result in failures:
+        failures_by_question[result.question].append(result)
+
+    unique_failed_questions = []
+    for question, question_failures in sorted(failures_by_question.items()):
+        unique_failed_questions.append(
+            {
+                "question": question,
+                "count": len(question_failures),
+                "categories": sorted(
+                    {
+                        failure.failure_category or FAILURE_UNEXPECTED
+                        for failure in question_failures
+                    }
+                ),
+                "errors": sorted(
+                    {failure.error or "" for failure in question_failures if failure.error}
+                )[:5],
+            }
+        )
+
+    return {
+        "total": len(results),
+        "successes": successes,
+        "failures": len(failures),
+        "failure_categories": dict(sorted(category_counts.items())),
+        "unique_failed_questions": unique_failed_questions,
+        "results": [asdict(result) for result in results],
+    }
+
+
+def _write_summary(path: str | None, results: list[QuestionResult]) -> None:
+    if not path:
+        return
+    summary_path = Path(path)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(_build_summary(results), indent=2) + "\n")
+
+
+def _print_failure_summary(results: list[QuestionResult]) -> None:
+    failures = [result for result in results if not result.ok]
+    if not failures:
+        return
+
+    print("Failure summary:")
+    for category, count in sorted(
+        Counter(result.failure_category or FAILURE_UNEXPECTED for result in failures).items()
+    ):
+        print(f"- {category}: {count}")
+
+    failures_by_question: dict[str, list[QuestionResult]] = defaultdict(list)
+    for result in failures:
+        failures_by_question[result.question].append(result)
+
+    print("Unique failed questions:")
+    for question, question_failures in sorted(failures_by_question.items()):
+        categories = sorted(
+            {failure.failure_category or FAILURE_UNEXPECTED for failure in question_failures}
+        )
+        first_error = next((failure.error for failure in question_failures if failure.error), "")
+        print(
+            f"- count={len(question_failures)} categories={','.join(categories)} "
+            f"question={question!r} error={first_error}"
+        )
+
+
 def _quota_preflight_ok() -> tuple[bool, str]:
     return True, ""
 
@@ -111,7 +272,7 @@ async def run_question(
     per_question_timeout_seconds: float,
     max_retries: int,
     base_retry_seconds: float,
-) -> tuple[str, bool, bool]:
+) -> QuestionResult:
     """Run one question through the supervisor with a random model assignment."""
     from src.agent_graph import get_supervisor
 
@@ -135,23 +296,64 @@ async def run_question(
                 ),
                 timeout=per_question_timeout_seconds,
             )
-            print(f"✅ {question[:80]} -> {str(result.get('final_output', ''))[:80]}")
-            return question, True, False
+            final_output_preview = str(result.get("final_output", ""))[:80]
+            print(f"✅ {question[:80]} -> {final_output_preview}")
+            return QuestionResult(
+                question=question,
+                ok=True,
+                model=selected_model,
+                attempts=attempt,
+                final_output_preview=final_output_preview,
+            )
         except TimeoutError:
-            print(f"❌ {question[:80]} -> timed out after {per_question_timeout_seconds:.1f}s")
-            return question, False, False
+            error = f"timed out after {per_question_timeout_seconds:.1f}s"
+            print(f"❌ [{FAILURE_TIMEOUT}] {question[:80]} -> {error}")
+            return QuestionResult(
+                question=question,
+                ok=False,
+                failure_category=FAILURE_TIMEOUT,
+                error=error,
+                model=selected_model,
+                attempts=attempt,
+            )
         except Exception as exc:
             if not _is_resource_exhausted_error(exc):
-                print(f"❌ {question[:80]} -> {exc}")
-                return question, False, False
+                error = str(exc)
+                category = _classify_failure(error)
+                print(f"❌ [{category}] {question[:80]} -> {error}")
+                return QuestionResult(
+                    question=question,
+                    ok=False,
+                    failure_category=category,
+                    error=error,
+                    model=selected_model,
+                    attempts=attempt,
+                )
 
             if _is_hard_quota_exhausted(exc):
-                print(f"⏹️ {question[:80]} -> hard quota exhausted ({exc})")
-                return question, False, True
+                error = f"hard quota exhausted ({exc})"
+                print(f"⏹️ [{FAILURE_QUOTA}] {question[:80]} -> {error}")
+                return QuestionResult(
+                    question=question,
+                    ok=False,
+                    hard_stop=True,
+                    failure_category=FAILURE_QUOTA,
+                    error=error,
+                    model=selected_model,
+                    attempts=attempt,
+                )
 
             if attempt > max_retries:
-                print(f"❌ {question[:80]} -> exhausted retries ({exc})")
-                return question, False, False
+                error = f"exhausted retries ({exc})"
+                print(f"❌ [{FAILURE_QUOTA}] {question[:80]} -> {error}")
+                return QuestionResult(
+                    question=question,
+                    ok=False,
+                    failure_category=FAILURE_QUOTA,
+                    error=error,
+                    model=selected_model,
+                    attempts=attempt,
+                )
 
             suggested = _retry_delay_seconds(exc)
             backoff = base_retry_seconds * (2 ** (attempt - 1))
@@ -168,12 +370,11 @@ async def main_async(args: argparse.Namespace) -> None:
             print(reason)
             return
 
-    num_questions = args.num_questions if args.num_questions is not None else random.randint(1, 100)
-    rng = random.Random(args.seed)
-    if args.question_source == "bank":
-        questions = _fallback_questions(num_questions=num_questions, rng=rng)
-    else:
-        questions = generate_questions(num_questions=num_questions, seed=args.seed)
+    questions = _select_questions(
+        num_questions=args.num_questions,
+        question_source=args.question_source,
+        seed=args.seed,
+    )
 
     print(f"Generated {len(questions)} questions")
     print(f"Running with concurrency={args.concurrency}")
@@ -186,6 +387,7 @@ async def main_async(args: argparse.Namespace) -> None:
     successes = 0
     failures = 0
     hard_quota_stop = False
+    all_results: list[QuestionResult] = []
 
     for i in range(0, len(questions), args.concurrency):
         if hard_quota_stop:
@@ -203,12 +405,13 @@ async def main_async(args: argparse.Namespace) -> None:
                 for q in batch
             )
         )
-        for _, ok, hard_stop in results:
-            if ok:
+        all_results.extend(results)
+        for result in results:
+            if result.ok:
                 successes += 1
             else:
                 failures += 1
-            if hard_stop:
+            if result.hard_stop:
                 hard_quota_stop = True
         if hard_quota_stop:
             print("Hard quota exhausted; stopping remaining questions to avoid repeated 429s.")
@@ -220,6 +423,8 @@ async def main_async(args: argparse.Namespace) -> None:
     print("=" * 80)
     print(f"Completed. successes={successes} failures={failures}")
     print("=" * 80)
+    _print_failure_summary(all_results)
+    _write_summary(args.summary_path, all_results)
 
     if args.fail_on_error and failures > 0:
         raise SystemExit(1)
@@ -238,7 +443,7 @@ def main() -> None:
     parser.add_argument(
         "--seed",
         type=int,
-        default=None,
+        default=int(os.environ["SEED"]) if os.environ.get("SEED") else None,
         help="Random seed for reproducibility",
     )
     parser.add_argument(
@@ -292,6 +497,11 @@ def main() -> None:
         type=float,
         default=float(os.environ.get("PER_QUESTION_TIMEOUT_SECONDS", "120")),
         help="Fail a question if supervisor execution exceeds this timeout (default: 120s)",
+    )
+    parser.add_argument(
+        "--summary-path",
+        default=os.environ.get("QUERY_SUMMARY_PATH", ""),
+        help="Optional path for a JSON query result summary artifact",
     )
     args = parser.parse_args()
 

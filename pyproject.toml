@@ -30,7 +30,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pydantic-ai>=1.10.0",
+    "pydantic-ai>=2.0.0,<3.0.0",
     "google-genai>=1.38.0",
     "openai>=1.60.0",
     "pint>=0.24.4",

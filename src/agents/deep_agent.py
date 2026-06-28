@@ -2,22 +2,28 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 import re
-import ast
 from typing import Any
 
 from braintrust import SpanTypeAttribute, start_span
 from pydantic_ai import Agent
 
 from src.agents.critic_agent import get_critic_agent
-from src.agents.math_agent import add, convert_units, divide, get_math_agent, multiply, subtract
+from src.agents.math_agent import (
+    add,
+    convert_units,
+    divide,
+    get_math_agent,
+    multiply,
+    subtract,
+)
 from src.agents.research_agent import get_research_agent
 from src.config import AgentConfig
 from src.helpers import run_pydantic_agent
 from src.modeling import resolve_model_name
-
 
 _MATH_OPS = {
     "add": add,
@@ -547,6 +553,7 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
                     )
                     fallback_kind = "deterministic_math"
                 handoff_span.log(
+                    metadata={"math_execution_path": fallback_kind},
                     output={
                         "final_output": response_text,
                         "parsed_result": fallback_result,
@@ -559,6 +566,7 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
                             }
                         ],
                         "fallback": fallback_kind,
+                        "math_execution_path": fallback_kind,
                     }
                 )
                 return {
@@ -637,12 +645,14 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
                     f"Model output: {final_text}"
                 )
             handoff_span.log(
+                metadata={"math_execution_path": "model_math"},
                 output={
                     "final_output": final_text,
                     "parsed_result": parsed_result,
                     "result_mode": result_mode,
                     "returned_response": response_text,
                     "messages": messages,
+                    "math_execution_path": "model_math",
                 }
             )
             return {
@@ -900,7 +910,7 @@ def get_deep_agent(config: AgentConfig | None = None) -> Agent:
             request_math_subtask,
         ],
     )
-    setattr(supervisor_agent, "_validate_and_correct", validate_and_correct)
+    supervisor_agent._validate_and_correct = validate_and_correct  # type: ignore[attr-defined]
     return supervisor_agent
 
 

@@ -1,4 +1,4 @@
-pydantic-ai
+pydantic-ai>=2.0.0,<3.0.0
 google-genai
 openai
 tavily-python

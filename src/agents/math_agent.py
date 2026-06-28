@@ -3,8 +3,8 @@
 import re
 from typing import Any, Callable
 
-from pydantic_ai import Agent
 from pint import UnitRegistry
+from pydantic_ai import Agent
 
 from src.config import DEFAULT_MATH_AGENT_PROMPT, DEFAULT_MATH_MODEL
 from src.modeling import resolve_model_name
@@ -14,24 +14,40 @@ _UNIT_ALIASES = {
     "j": "joule",
     "joules": "joule",
     "hp": "horsepower",
+    "hp s": "horsepower * second",
+    "hp second": "horsepower * second",
+    "hp seconds": "horsepower * second",
+    "hp sec": "horsepower * second",
+    "hp secs": "horsepower * second",
     "horsepower-seconds": "horsepower * second",
+    "horsepower-second": "horsepower * second",
     "horsepower seconds": "horsepower * second",
+    "horsepower second": "horsepower * second",
     "horsepower-seconds(s)": "horsepower * second",
     "horsepower-hours": "horsepower * hour",
+    "horsepower-hour": "horsepower * hour",
     "horsepower hours": "horsepower * hour",
+    "horsepower hour": "horsepower * hour",
     "hp-s": "horsepower * second",
+    "hp-sec": "horsepower * second",
+    "hp-secs": "horsepower * second",
     "hp*s": "horsepower * second",
     "hp-hr": "horsepower * hour",
     "hp*h": "horsepower * hour",
 }
 _LIGHTBULB_HOURS_PATTERN = re.compile(
-    r"(?P<watts>\d+(?:\.\d+)?)\s*w(?:att)?\s*lightbulb[-\s]*hours?",
+    r"(?P<watts>\d+(?:\.\d+)?)\s*-?\s*(?:w|watts?)\s*-?\s*"
+    r"(?:light[-\s]*bulb|lightbulb)[-\s]*hours?",
     flags=re.IGNORECASE,
 )
 
 
 def _normalize_unit(unit: str) -> str:
     lowered = unit.strip().lower()
+    lowered = re.sub(r"\s*\([^)]*\)\s*$", "", lowered)
+    lowered = lowered.replace("_", " ")
+    lowered = re.sub(r"\s*-\s*", "-", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
     return _UNIT_ALIASES.get(lowered, lowered)
 
 
@@ -94,9 +110,25 @@ def convert_units(value: float, from_unit: str, to_unit: str) -> float:
     return float(converted.magnitude)
 
 
+def _convert_units_tool(value: float, from_unit: str, to_unit: str) -> float | str:
+    """Safe MathAgent tool wrapper for model-generated unit arguments."""
+    try:
+        return convert_units(value=value, from_unit=from_unit, to_unit=to_unit)
+    except Exception:
+        return (
+            f"Unit conversion failed: could not convert {value:g} from "
+            f"{from_unit!r} to {to_unit!r}. Use compatible unit names or explain "
+            "that the requested conversion is unsupported."
+        )
+
+
+_convert_units_tool.__tool_name__ = "convert_units"  # type: ignore[attr-defined]
+
+
 def _register_tools(agent: Agent, tools: list[Callable[..., Any]]) -> None:
     for tool in tools:
-        agent.tool_plain(name=tool.__name__)(tool)
+        tool_name = str(getattr(tool, "__tool_name__", tool.__name__))
+        agent.tool_plain(name=tool_name)(tool)
 
 
 def get_math_agent(
@@ -107,7 +139,7 @@ def get_math_agent(
     """Create the math agent with optional custom prompt and model."""
     prompt = system_prompt if system_prompt is not None else DEFAULT_MATH_AGENT_PROMPT
 
-    tools: list[Callable[..., Any]] = [add, subtract, multiply, divide, convert_units]
+    tools: list[Callable[..., Any]] = [add, subtract, multiply, divide, _convert_units_tool]
     if extra_tools:
         tools.extend(extra_tools)
 

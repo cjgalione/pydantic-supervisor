@@ -30,14 +30,14 @@ class ResolveModelNameTests(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
-    def test_gateway_vendor_model_gets_openai_chat_prefix_without_gateway_key(self) -> None:
+    def test_gateway_vendor_model_gets_openai_prefix_without_gateway_key(self) -> None:
         self.assertEqual(
             resolve_model_name("moonshotai/Kimi-K2.5"),
             "openai:moonshotai/Kimi-K2.5",
         )
 
     @patch.dict(os.environ, {"BRAINTRUST_API_KEY": ""}, clear=False)
-    def test_openai_responses_vendor_model_downgrades_to_openai_chat_without_gateway_key(self) -> None:
+    def test_openai_responses_vendor_model_uses_openai_provider_without_gateway_key(self) -> None:
         self.assertEqual(
             resolve_model_name("openai-responses:moonshotai/Kimi-K2.5"),
             "openai:moonshotai/Kimi-K2.5",
@@ -60,7 +60,7 @@ class AgentInstantiationTests(unittest.TestCase):
             clear=False,
         ):
             agent = Agent(model=resolve_model_name("moonshotai/Kimi-K2.5"))
-            self.assertEqual(type(agent.model).__name__, "OpenAIChatModel")
+            self.assertEqual(type(agent.model).__name__, "OpenAIResponsesModel")
 
     def test_gateway_vendor_model_uses_braintrust_gateway_when_key_present(self) -> None:
         with patch.dict(
