@@ -13,6 +13,18 @@ _UREG = UnitRegistry()
 _UNIT_ALIASES = {
     "j": "joule",
     "joules": "joule",
+    "wh": "watt * hour",
+    "w h": "watt * hour",
+    "watt hour": "watt * hour",
+    "watt hours": "watt * hour",
+    "watt-hour": "watt * hour",
+    "watt-hours": "watt * hour",
+    "kwh": "kilowatt * hour",
+    "kw h": "kilowatt * hour",
+    "kilowatt hour": "kilowatt * hour",
+    "kilowatt hours": "kilowatt * hour",
+    "kilowatt-hour": "kilowatt * hour",
+    "kilowatt-hours": "kilowatt * hour",
     "hp": "horsepower",
     "hp s": "horsepower * second",
     "hp second": "horsepower * second",
@@ -38,6 +50,10 @@ _UNIT_ALIASES = {
 _LIGHTBULB_HOURS_PATTERN = re.compile(
     r"(?P<watts>\d+(?:\.\d+)?)\s*-?\s*(?:w|watts?)\s*-?\s*"
     r"(?:light[-\s]*bulb|lightbulb)[-\s]*hours?",
+    flags=re.IGNORECASE,
+)
+_WATT_HOUR_QUANTITY_PATTERN = re.compile(
+    r"(?P<watts>\d+(?:\.\d+)?)\s*-?\s*(?:w|watts?|watt)\s*-?\s*(?:h|hours?)\b",
     flags=re.IGNORECASE,
 )
 
@@ -72,6 +88,21 @@ def _convert_to_lightbulb_hours(value: float, from_unit: str, to_unit: str) -> f
     return float(joules / joules_per_lightbulb_hour)
 
 
+def _convert_to_watt_hour_quantity(value: float, from_unit: str, to_unit: str) -> float | None:
+    match = _WATT_HOUR_QUANTITY_PATTERN.fullmatch(to_unit.strip())
+    if not match:
+        return None
+
+    watts = float(match.group("watts"))
+    if watts <= 0:
+        return None
+
+    source_quantity = float(value) * _UREG.parse_units(_normalize_unit(from_unit))
+    joules = source_quantity.to(_UREG.joule).magnitude
+    joules_per_quantity = watts * 3600.0
+    return float(joules / joules_per_quantity)
+
+
 def add(a: float, b: float) -> float:
     """Add two numbers and return their sum."""
     return a + b
@@ -102,6 +133,10 @@ def convert_units(value: float, from_unit: str, to_unit: str) -> float:
     lightbulb_hours = _convert_to_lightbulb_hours(value=value, from_unit=source, to_unit=target)
     if lightbulb_hours is not None:
         return lightbulb_hours
+
+    watt_hour_quantity = _convert_to_watt_hour_quantity(value=value, from_unit=source, to_unit=target)
+    if watt_hour_quantity is not None:
+        return watt_hour_quantity
 
     normalized_source = _normalize_unit(source)
     normalized_target = _normalize_unit(target)

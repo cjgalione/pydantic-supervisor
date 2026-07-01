@@ -29,6 +29,22 @@ def test_convert_units_horsepower_seconds_observed_variants() -> None:
         assert math.isclose(result, 1341.0220895950278, rel_tol=1e-9)
 
 
+def test_convert_units_watt_hour_aliases_do_not_hit_pint_subtraction() -> None:
+    variants = ["wh", "Wh", "watt-hour", "watt-hours", "watt hour"]
+
+    for variant in variants:
+        result = convert_units(1e44, "joules", variant)
+        assert math.isclose(result, 1e44 / 3600, rel_tol=1e-12)
+
+
+def test_convert_units_quantity_of_watt_hours() -> None:
+    variants = ["60 Wh", "60W h", "60 watt-hours", "60 watt hours"]
+
+    for variant in variants:
+        result = convert_units(1e44, "joules", variant)
+        assert math.isclose(result, 1e44 / (60 * 3600), rel_tol=1e-12)
+
+
 def test_convert_units_tolerates_noisy_lightbulb_hours_target() -> None:
     result = convert_units(
         1e44,
@@ -96,6 +112,15 @@ def test_fallback_unit_conversion_handles_scheduled_horsepower_seconds_query() -
     assert math.isclose(result, 1341.0220895950278, rel_tol=1e-9)
 
 
+def test_fallback_unit_conversion_handles_supernova_lightbulb_hours_query() -> None:
+    result = _fallback_unit_conversion_from_operation_text(
+        "If a supernova releases 10^44 joules, how many 60W lightbulb-hours is that?"
+    )
+
+    assert result is not None
+    assert math.isclose(result, 1e44 / (60 * 3600), rel_tol=1e-12)
+
+
 def test_format_fallback_unit_conversion_response() -> None:
     response = _format_fallback_unit_conversion_response(
         "Convert 10^6 joules to horsepower-seconds.",
@@ -104,6 +129,16 @@ def test_format_fallback_unit_conversion_response() -> None:
     )
 
     assert response == "1e+06 joules is approximately 1341.02 horsepower-seconds."
+
+
+def test_format_fallback_unit_conversion_response_for_lightbulb_hours_query() -> None:
+    response = _format_fallback_unit_conversion_response(
+        "If a supernova releases 10^44 joules, how many 60W lightbulb-hours is that?",
+        1e44 / (60 * 3600),
+        "explanatory",
+    )
+
+    assert response == "1e+44 joules is approximately 4.62963e+38 60W lightbulb-hours."
 
 
 def test_unit_conversion_query_requires_math_handoff() -> None:

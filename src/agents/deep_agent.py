@@ -66,6 +66,30 @@ def _parse_conversion_operation(operation: str) -> tuple[float, str, str] | None
     return value, from_unit.strip(), to_unit.strip()
 
 
+def _parse_lightbulb_hours_operation(operation: str) -> tuple[float, str, str] | None:
+    text = operation.strip()
+    m = re.search(
+        r"(?P<value>\d+(?:\.\d+)?(?:\s*(?:\^|e)\s*-?\d+)?)\s*"
+        r"(?P<from_unit>joules?|j)\b.*?"
+        r"(?P<watts>\d+(?:\.\d+)?)\s*-?\s*(?:w|watts?)\s*-?\s*"
+        r"(?:light[-\s]*bulb|lightbulb)[-\s]*hours?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+
+    value = _parse_number_token(re.sub(r"\s+", "", m.group("value")))
+    if value is None:
+        return None
+
+    watts = float(m.group("watts"))
+    if watts <= 0:
+        return None
+
+    return value, m.group("from_unit"), f"{watts:g}W lightbulb-hours"
+
+
 def _is_basic_math_operation(operation: str) -> bool:
     return operation.strip().lower() in _MATH_OPS
 
@@ -177,7 +201,7 @@ def _fallback_numeric_from_operation_text(operation: str) -> float | None:
 
 
 def _fallback_unit_conversion_from_operation_text(operation: str) -> float | None:
-    conversion = _parse_conversion_operation(operation)
+    conversion = _parse_conversion_operation(operation) or _parse_lightbulb_hours_operation(operation)
     if conversion is None:
         return None
 
@@ -215,6 +239,8 @@ def _format_fallback_unit_conversion_response(
         return str(result)
 
     conversion = _parse_conversion_operation(operation)
+    if conversion is None:
+        conversion = _parse_lightbulb_hours_operation(operation)
     if conversion is None:
         return str(result)
 
