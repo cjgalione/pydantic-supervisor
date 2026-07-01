@@ -25,7 +25,7 @@ on:
       trace_profile:
         description: "Trace profile: lean or full"
         required: false
-        default: "lean"
+        default: "full"
 
 jobs:
   run-queries:
@@ -76,7 +76,7 @@ jobs:
           MAX_RETRIES: 3
           BASE_RETRY_SECONDS: 15
           INTER_QUESTION_DELAY_SECONDS: 2
-          TRACE_PROFILE: ${{ github.event_name == 'schedule' && 'lean' || github.event.inputs.trace_profile || 'lean' }}
+          TRACE_PROFILE: ${{ github.event_name == 'schedule' && 'full' || github.event.inputs.trace_profile || 'full' }}
           BRAINTRUST_SYNC_FLUSH: 1
           MODEL_POOL: ${{ github.event.inputs.model_pool || 'gpt-4.1-mini' }}
           QUESTION_SOURCE: ${{ github.event.inputs.question_source || 'bank' }}
