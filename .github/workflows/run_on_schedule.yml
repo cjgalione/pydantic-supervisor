@@ -44,10 +44,10 @@ jobs:
       - name: Validate required secrets
         env:
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
         run: |
           missing=0
-          for name in BRAINTRUST_API_KEY TAVILY_API_KEY; do
+          for name in BRAINTRUST_API_KEY EXA_API_KEY; do
             if [ -z "${!name}" ]; then
               echo "::error::$name is not set"
               missing=1
@@ -63,7 +63,10 @@ jobs:
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           BRAINTRUST_PROJECT: pydantic-supervisor
           BRAINTRUST_ORG_NAME: Braintrust Demos
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          YDC_API_KEY: ${{ secrets.YDC_API_KEY }}
+          SEARCH_PROVIDER: exa
           # Route OpenAI SDK calls through the Braintrust gateway so all LLM
           # traffic is logged in traces. Anthropic models are routed at the code
           # level in resolve_model_name() since the Anthropic SDK's URL

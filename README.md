@@ -2,7 +2,7 @@
 
 A multi-agent supervisor system built with PydanticAI that routes user tasks between:
 
-- `ResearchAgent` (Tavily-backed web search)
+- `ResearchAgent` (Exa-first web search with Tavily/You.com fallbacks)
 - `MathAgent` (arithmetic tools)
 - `Supervisor Agent` (routing + synthesis)
 - `CriticAgent` (post-response delegation/tool-use validator)
@@ -31,7 +31,8 @@ cp .env.example .env
 Required keys:
 
 - `OPENAI_API_KEY` (default runtime model path)
-- `TAVILY_API_KEY`
+- `EXA_API_KEY` for primary web search
+- Optional: `TAVILY_API_KEY` or `YDC_API_KEY` for fallback web search
 - `BRAINTRUST_API_KEY` (if tracing/evals)
 - Judge scorers reuse `OPENAI_API_KEY`
 - Optional: `TRACE_PROFILE=full|lean` (default `full`)
