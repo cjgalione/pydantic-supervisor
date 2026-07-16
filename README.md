@@ -141,6 +141,8 @@ modal serve src/eval_server.py
 ```
 
 Then connect the endpoint from Braintrust Playground remote eval UI.
+Deployments scale to zero by default. Set `MODAL_MIN_CONTAINERS=1` only when a warm
+interactive endpoint is explicitly needed.
 
 ## Interactive Queries On Modal
 

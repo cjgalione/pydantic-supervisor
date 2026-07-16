@@ -1,35 +1,26 @@
-name: Daily modal queries
+name: Daily supervisor smoke
 on:
   schedule:
-    # Avoid the top of the hour, when GitHub Actions scheduled runs are most
-    # likely to be delayed or dropped under load.
-    - cron: "17 6 * * *"  # daily at 06:17 UTC
+    - cron: "21 6 * * *"
   workflow_dispatch:
     inputs:
       num_questions:
         description: "Number of questions to generate for this manual run"
         required: false
         default: "100"
-      model_pool:
-        description: "Comma-separated model IDs for batch routing (e.g. moonshotai/Kimi-K2.5)"
-        required: false
-        default: "moonshotai/Kimi-K2.5"
-      question_source:
-        description: "Question source: generated or bank"
-        required: false
-        default: "bank"
-      per_question_timeout_seconds:
-        description: "Timeout per question in seconds"
-        required: false
-        default: "120"
-      trace_profile:
-        description: "Trace profile: lean or full"
-        required: false
-        default: "full"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: daily-supervisor-smoke-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   run-queries:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +35,23 @@ jobs:
       - name: Validate required secrets
         env:
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          YDC_API_KEY: ${{ secrets.YDC_API_KEY }}
+          BRAINTRUST_PROJECT: "pydantic-supervisor"
+          BRAINTRUST_ORG_NAME: "Braintrust Demos"
+          OPENAI_BASE_URL: "https://gateway.braintrust.dev/v1/proxy"
+          SEARCH_PROVIDER: "exa"
+          MODEL_POOL: "gpt-4.1-mini"
+          QUESTION_SOURCE: "bank"
+          PER_QUESTION_TIMEOUT_SECONDS: "120"
+          CONCURRENCY: "1"
+          MAX_RETRIES: "3"
+          BASE_RETRY_SECONDS: "15"
+          INTER_QUESTION_DELAY_SECONDS: "2"
+          TRACE_PROFILE: "full"
+          BRAINTRUST_SYNC_FLUSH: "1"
         run: |
           missing=0
           for name in BRAINTRUST_API_KEY EXA_API_KEY; do
@@ -58,41 +65,104 @@ jobs:
       - name: Install dependencies with uv
         run: uv pip install -r requirements.txt --system
 
-      - name: Run queries
+      - name: Preflight providers
         env:
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
-          BRAINTRUST_PROJECT: pydantic-supervisor
-          BRAINTRUST_ORG_NAME: Braintrust Demos
+          OPENAI_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           YDC_API_KEY: ${{ secrets.YDC_API_KEY }}
-          SEARCH_PROVIDER: exa
-          # Route OpenAI SDK calls through the Braintrust gateway so all LLM
-          # traffic is logged in traces. Anthropic models are routed at the code
-          # level in resolve_model_name() since the Anthropic SDK's URL
-          # construction is incompatible with the gateway's endpoint structure.
+          BRAINTRUST_PROJECT: "pydantic-supervisor"
+          BRAINTRUST_ORG_NAME: "Braintrust Demos"
           OPENAI_BASE_URL: "https://gateway.braintrust.dev/v1/proxy"
-          OPENAI_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
-          NUM_QUESTIONS: ${{ github.event_name == 'schedule' && '15' || github.event.inputs.num_questions || '100' }}
-          SEED: ${{ github.event_name == 'schedule' && '0' || '' }}
-          CONCURRENCY: 1
-          MAX_RETRIES: 3
-          BASE_RETRY_SECONDS: 15
-          INTER_QUESTION_DELAY_SECONDS: 2
-          TRACE_PROFILE: ${{ github.event_name == 'schedule' && 'full' || github.event.inputs.trace_profile || 'full' }}
-          BRAINTRUST_SYNC_FLUSH: 1
-          MODEL_POOL: ${{ github.event.inputs.model_pool || 'gpt-4.1-mini' }}
-          QUESTION_SOURCE: ${{ github.event.inputs.question_source || 'bank' }}
-          PER_QUESTION_TIMEOUT_SECONDS: ${{ github.event.inputs.per_question_timeout_seconds || '120' }}
-          QUERY_SUMMARY_PATH: query-summary.json
-          PYTHONUNBUFFERED: 1
+          SEARCH_PROVIDER: "exa"
+          MODEL_POOL: "gpt-4.1-mini"
+          QUESTION_SOURCE: "bank"
+          PER_QUESTION_TIMEOUT_SECONDS: "120"
+          CONCURRENCY: "1"
+          MAX_RETRIES: "3"
+          BASE_RETRY_SECONDS: "15"
+          INTER_QUESTION_DELAY_SECONDS: "2"
+          TRACE_PROFILE: "full"
+          BRAINTRUST_SYNC_FLUSH: "1"
+          QUERY_SUMMARY_PATH: daily-summary.json
         run: |
-          uv run python scripts/run_queries.py --num-questions "$NUM_QUESTIONS" --fail-on-error
+          uv run python scripts/run_queries.py --preflight-only || { printf '{"preflight":{"status":"failed"}}\n' > daily-summary.json; exit 1; }
 
-      - name: Upload query summary
+      - name: Run queries
+        env:
+          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          YDC_API_KEY: ${{ secrets.YDC_API_KEY }}
+          BRAINTRUST_PROJECT: "pydantic-supervisor"
+          BRAINTRUST_ORG_NAME: "Braintrust Demos"
+          OPENAI_BASE_URL: "https://gateway.braintrust.dev/v1/proxy"
+          SEARCH_PROVIDER: "exa"
+          MODEL_POOL: "gpt-4.1-mini"
+          QUESTION_SOURCE: "bank"
+          PER_QUESTION_TIMEOUT_SECONDS: "120"
+          CONCURRENCY: "1"
+          MAX_RETRIES: "3"
+          BASE_RETRY_SECONDS: "15"
+          INTER_QUESTION_DELAY_SECONDS: "2"
+          TRACE_PROFILE: "full"
+          BRAINTRUST_SYNC_FLUSH: "1"
+          NUM_QUESTIONS: ${{ github.event_name == 'schedule' && '10' || github.event.inputs.num_questions || '100' }}
+          QUERY_SUMMARY_PATH: daily-summary.json
+        run: |
+          uv run python scripts/run_queries.py --num-questions "$NUM_QUESTIONS" --question-source bank --seed 0 --skip-preflight --fail-on-error
+
+      - name: Upload daily summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: daily-modal-query-summary
-          path: query-summary.json
+          name: daily-supervisor-summary
+          path: daily-summary.json
           if-no-files-found: warn
+
+  notify-failure:
+    needs: run-queries
+    if: ${{ always() && github.event_name == 'schedule' && needs.run-queries.result == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const label = 'daily-run-failure';
+            const title = 'Daily supervisor smoke is failing';
+            const body = `Scheduled run failed: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo, per_page: 100,
+            });
+            if (!labels.some((item) => item.name === label)) {
+              await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name: label, color: 'b60205' });
+            }
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: label, per_page: 100,
+            });
+            const existing = issues.find((item) => item.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: [label] });
+            }
+
+  notify-recovery:
+    needs: run-queries
+    if: ${{ always() && github.event_name == 'schedule' && needs.run-queries.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const label = 'daily-run-failure';
+            const title = 'Daily supervisor smoke is failing';
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: label, per_page: 100,
+            });
+            for (const issue of issues.filter((item) => item.title === title)) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, body: `Recovered: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}` });
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, state: 'closed' });
+            }

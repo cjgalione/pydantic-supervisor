@@ -10,6 +10,7 @@ from scripts.run_queries import (
     QuestionResult,
     _build_summary,
     _classify_failure,
+    _preflight_failure_category,
     _select_questions,
     _write_summary,
 )
@@ -91,3 +92,9 @@ def test_write_summary_outputs_json_artifact(tmp_path) -> None:
     assert payload["total"] == 1
     assert payload["successes"] == 1
     assert payload["results"][0]["question"] == "What is 37 * 24?"
+
+
+def test_preflight_classifies_auth_quota_and_transient_failures() -> None:
+    assert _preflight_failure_category(RuntimeError("Incorrect API key")) == "authentication"
+    assert _preflight_failure_category(RuntimeError("insufficient_quota")) == "quota"
+    assert _preflight_failure_category(RuntimeError("connection timed out")) == "transient"

@@ -8,6 +8,7 @@ import os
 import random
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -187,7 +188,9 @@ def _select_questions(
     return generate_questions(num_questions=resolved_num_questions, seed=seed)
 
 
-def _build_summary(results: list[QuestionResult]) -> dict[str, object]:
+def _build_summary(
+    results: list[QuestionResult], preflight: dict[str, str] | None = None
+) -> dict[str, object]:
     failures = [result for result in results if not result.ok]
     successes = len(results) - len(failures)
     category_counts = Counter(
@@ -217,6 +220,7 @@ def _build_summary(results: list[QuestionResult]) -> dict[str, object]:
         )
 
     return {
+        "preflight": preflight or {},
         "total": len(results),
         "successes": successes,
         "failures": len(failures),
@@ -226,12 +230,16 @@ def _build_summary(results: list[QuestionResult]) -> dict[str, object]:
     }
 
 
-def _write_summary(path: str | None, results: list[QuestionResult]) -> None:
+def _write_summary(
+    path: str | None,
+    results: list[QuestionResult],
+    preflight: dict[str, str] | None = None,
+) -> None:
     if not path:
         return
     summary_path = Path(path)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(_build_summary(results), indent=2) + "\n")
+    summary_path.write_text(json.dumps(_build_summary(results, preflight), indent=2) + "\n")
 
 
 def _print_failure_summary(results: list[QuestionResult]) -> None:
@@ -263,6 +271,51 @@ def _print_failure_summary(results: list[QuestionResult]) -> None:
 
 def _quota_preflight_ok() -> tuple[bool, str]:
     return True, ""
+
+
+def _preflight_failure_category(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "insufficient_quota" in text or "exceeded your current quota" in text:
+        return "quota"
+    if any(
+        marker in text
+        for marker in ("authentication", "invalid api key", "incorrect api key", "unauthorized", "401")
+    ):
+        return "authentication"
+    if any(marker in text for marker in ("429", "timeout", "connection", "temporarily")):
+        return "transient"
+    return "provider"
+
+
+def _run_preflight() -> dict[str, str]:
+    missing = [name for name in ("BRAINTRUST_API_KEY", "EXA_API_KEY") if not os.environ.get(name)]
+    if missing:
+        raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
+
+    from openai import OpenAI
+
+    from src.agents.research_agent import _search_exa
+
+    for attempt in range(1, 4):
+        try:
+            client = OpenAI(
+                api_key=os.environ["BRAINTRUST_API_KEY"],
+                base_url=os.environ.get("OPENAI_BASE_URL"),
+            )
+            client.chat.completions.create(
+                model=_parse_model_pool(os.environ.get("MODEL_POOL"))[0],
+                messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+            )
+            _search_exa(query="Braintrust", max_results=1)
+            return {"braintrust": "ok", "model": "ok", "exa": "ok"}
+        except Exception as exc:
+            category = _preflight_failure_category(exc)
+            if category == "transient" and attempt < 3:
+                time.sleep(2**attempt)
+                continue
+            raise RuntimeError(f"Provider preflight failed ({category}).") from exc
+
+    raise RuntimeError("Provider preflight failed (transient).")
 
 
 async def run_question(
@@ -363,12 +416,11 @@ async def run_question(
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    if args.quota_preflight:
-        ok, reason = _quota_preflight_ok()
-        if not ok:
-            print("Hard quota appears exhausted; skipping this batch run.")
-            print(reason)
-            return
+    preflight = {} if args.skip_preflight else _run_preflight()
+    if args.preflight_only:
+        _write_summary(args.summary_path, [], preflight)
+        print("Provider preflight passed.")
+        return
 
     questions = _select_questions(
         num_questions=args.num_questions,
@@ -424,7 +476,7 @@ async def main_async(args: argparse.Namespace) -> None:
     print(f"Completed. successes={successes} failures={failures}")
     print("=" * 80)
     _print_failure_summary(all_results)
-    _write_summary(args.summary_path, all_results)
+    _write_summary(args.summary_path, all_results, preflight)
 
     if args.fail_on_error and failures > 0:
         raise SystemExit(1)
@@ -480,6 +532,16 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=os.environ.get("QUOTA_PREFLIGHT", "1") != "0",
         help="Run preflight checks before processing batches",
+    )
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Verify the configured model and Exa adapter without running questions",
+    )
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip provider preflight after a separate successful preflight step",
     )
     parser.add_argument(
         "--model-pool",
