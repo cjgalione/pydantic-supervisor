@@ -46,6 +46,7 @@ async def test_supervisor_root_trace_uses_chat_input_for_topics(monkeypatch: pyt
 
     assert result["final_output"] == "The answer is 42."
     assert captured_starts[0]["input"] == {
+        "query": "What is 6 * 7?",
         "new_message": {"role": "user", "parts": [{"text": "What is 6 * 7?"}]},
         "trace_context": {"github_run_id": "123", "question_number": 7},
     }

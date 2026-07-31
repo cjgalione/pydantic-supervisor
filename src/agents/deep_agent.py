@@ -964,6 +964,7 @@ async def run_supervisor_with_critic(
 ) -> dict[str, Any]:
     """Run supervisor, then enforce delegation policy with critic validation."""
     root_input: dict[str, Any] = {
+        "query": query,
         "new_message": {"role": "user", "parts": [{"text": query}]}
     }
     if trace_context:
