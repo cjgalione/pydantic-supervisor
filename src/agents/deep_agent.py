@@ -35,6 +35,16 @@ _MATH_OPS = {
 _CRITIC_ACTIONS = {"accept", "delegate_research", "delegate_math", "retry_with_instruction"}
 
 
+def _thread_preprocessor_input(query: str) -> dict[str, list[dict[str, str]]]:
+    return {"messages": [{"role": "user", "content": query}]}
+
+
+def _thread_preprocessor_output(final_output: str) -> list[dict[str, str]]:
+    if not final_output:
+        return []
+    return [{"role": "assistant", "content": final_output}]
+
+
 def _register_tools(agent: Agent, tools: list[Any]) -> None:
     for tool in tools:
         agent.tool_plain(name=tool.__name__)(tool)
@@ -964,6 +974,7 @@ async def run_supervisor_with_critic(
 ) -> dict[str, Any]:
     """Run supervisor, then enforce delegation policy with critic validation."""
     root_input: dict[str, Any] = {
+        "app_name": app_name,
         "query": query,
         "new_message": {"role": "user", "parts": [{"text": query}]}
     }
@@ -1004,8 +1015,16 @@ async def run_supervisor_with_critic(
                 "critic_corrected": bool(validated.get("corrected", False)),
             }
         )
+        final_output = str(validated.get("final_output", "")).strip()
+        with start_span(
+            name="thread messages [supervisor_with_critic]",
+            type=SpanTypeAttribute.LLM,
+            input=_thread_preprocessor_input(query),
+        ) as thread_span:
+            thread_span.log(output=_thread_preprocessor_output(final_output))
+
         return {
-            "final_output": str(validated.get("final_output", "")).strip(),
+            "final_output": final_output,
             "messages": validated.get("messages", []),
             "critic_decision": validated.get("critic_decision", {}),
             "critic_corrected": bool(validated.get("corrected", False)),
