@@ -960,12 +960,20 @@ async def run_supervisor_with_critic(
     supervisor: Agent,
     query: str,
     app_name: str,
+    trace_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run supervisor, then enforce delegation policy with critic validation."""
+    root_input: dict[str, Any] = {
+        "new_message": {"role": "user", "parts": [{"text": query}]}
+    }
+    if trace_context:
+        root_input["trace_context"] = trace_context
+
     with start_span(
         name="invocation [supervisor_with_critic]",
         type=SpanTypeAttribute.TASK,
-        input={"query": query, "app_name": app_name},
+        input=root_input,
+        metadata={"app_name": app_name},
     ) as root_span:
         candidate = await run_pydantic_agent(
             agent=supervisor,
