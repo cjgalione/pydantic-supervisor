@@ -46,10 +46,10 @@ async def test_supervisor_root_trace_uses_chat_input_for_topics(monkeypatch: pyt
 
     assert result["final_output"] == "The answer is 42."
     assert captured_starts[0]["input"] == {
+        "app_name": "pydantic-supervisor-batch",
         "query": "What is 6 * 7?",
         "new_message": {"role": "user", "parts": [{"text": "What is 6 * 7?"}]},
         "trace_context": {"github_run_id": "123", "question_number": 7},
     }
     assert captured_starts[0]["metadata"] == {"app_name": "pydantic-supervisor-batch"}
-    assert "app_name" not in captured_starts[0]["input"]
     assert captured_span.logged_outputs[0]["output"]["final_output"] == "The answer is 42."
