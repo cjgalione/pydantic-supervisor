@@ -18,11 +18,13 @@ class CapturedSpan:
 @pytest.mark.asyncio
 async def test_supervisor_root_trace_uses_chat_input_for_topics(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_starts: list[dict[str, Any]] = []
-    captured_span = CapturedSpan()
+    captured_spans: list[CapturedSpan] = []
 
     @contextmanager
     def fake_start_span(**kwargs: Any) -> Iterator[CapturedSpan]:
+        captured_span = CapturedSpan()
         captured_starts.append(kwargs)
+        captured_spans.append(captured_span)
         yield captured_span
 
     async def fake_run_pydantic_agent(**kwargs: Any) -> dict[str, Any]:
@@ -52,4 +54,13 @@ async def test_supervisor_root_trace_uses_chat_input_for_topics(monkeypatch: pyt
         "trace_context": {"github_run_id": "123", "question_number": 7},
     }
     assert captured_starts[0]["metadata"] == {"app_name": "pydantic-supervisor-batch"}
-    assert captured_span.logged_outputs[0]["output"]["final_output"] == "The answer is 42."
+    assert captured_spans[0].logged_outputs[0]["output"]["final_output"] == "The answer is 42."
+
+    assert captured_starts[1]["name"] == "thread messages [supervisor_with_critic]"
+    assert captured_starts[1]["type"] == deep_agent.SpanTypeAttribute.LLM
+    assert captured_starts[1]["input"] == {
+        "messages": [{"role": "user", "content": "What is 6 * 7?"}]
+    }
+    assert captured_spans[1].logged_outputs[0]["output"] == [
+        {"role": "assistant", "content": "The answer is 42."}
+    ]
