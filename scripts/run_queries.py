@@ -30,6 +30,7 @@ from src.tracing import configure_adk_tracing  # noqa: E402
 load_dotenv()
 
 DEFAULT_MODEL_POOL = ["gpt-4.1-mini"]
+MIN_SCHEDULED_TOPIC_TRACES = 50
 FAILURE_TIMEOUT = "timeout"
 FAILURE_QUOTA = "quota"
 FAILURE_UNIT_CONVERSION = "unit_conversion"
@@ -188,6 +189,35 @@ def _select_questions(
     return generate_questions(num_questions=resolved_num_questions, seed=seed)
 
 
+def _enforce_scheduled_topic_minimum(num_questions: int | None) -> int | None:
+    if os.environ.get("GITHUB_EVENT_NAME") != "schedule":
+        return num_questions
+
+    if num_questions is not None and num_questions >= MIN_SCHEDULED_TOPIC_TRACES:
+        return num_questions
+
+    requested = "random default" if num_questions is None else str(num_questions)
+    print(
+        "Scheduled run requested "
+        f"{requested} questions; raising to {MIN_SCHEDULED_TOPIC_TRACES} "
+        "so the daily Topics window has enough traces."
+    )
+    return MIN_SCHEDULED_TOPIC_TRACES
+
+
+def _trace_context_for_question(*, question_number: int, question_total: int) -> dict[str, object]:
+    context: dict[str, object] = {
+        "question_number": question_number,
+        "question_total": question_total,
+        "source": "daily-supervisor-smoke",
+    }
+    for name in ("GITHUB_EVENT_NAME", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA"):
+        value = os.environ.get(name)
+        if value:
+            context[name.lower()] = value
+    return context
+
+
 def _build_summary(
     results: list[QuestionResult], preflight: dict[str, str] | None = None
 ) -> dict[str, object]:
@@ -325,6 +355,7 @@ async def run_question(
     per_question_timeout_seconds: float,
     max_retries: int,
     base_retry_seconds: float,
+    trace_context: dict[str, object] | None = None,
 ) -> QuestionResult:
     """Run one question through the supervisor with a random model assignment."""
     from src.agent_graph import get_supervisor
@@ -346,6 +377,7 @@ async def run_question(
                     supervisor=supervisor,
                     query=question,
                     app_name="pydantic-supervisor-batch",
+                    trace_context=trace_context,
                 ),
                 timeout=per_question_timeout_seconds,
             )
@@ -422,8 +454,9 @@ async def main_async(args: argparse.Namespace) -> None:
         print("Provider preflight passed.")
         return
 
+    num_questions = _enforce_scheduled_topic_minimum(args.num_questions)
     questions = _select_questions(
-        num_questions=args.num_questions,
+        num_questions=num_questions,
         question_source=args.question_source,
         seed=args.seed,
     )
@@ -444,7 +477,7 @@ async def main_async(args: argparse.Namespace) -> None:
     for i in range(0, len(questions), args.concurrency):
         if hard_quota_stop:
             break
-        batch = questions[i : i + args.concurrency]
+        batch = list(enumerate(questions[i : i + args.concurrency], start=i + 1))
         results = await asyncio.gather(
             *(
                 run_question(
@@ -453,8 +486,12 @@ async def main_async(args: argparse.Namespace) -> None:
                     per_question_timeout_seconds=args.per_question_timeout_seconds,
                     max_retries=args.max_retries,
                     base_retry_seconds=args.base_retry_seconds,
+                    trace_context=_trace_context_for_question(
+                        question_number=question_number,
+                        question_total=len(questions),
+                    ),
                 )
-                for q in batch
+                for question_number, q in batch
             )
         )
         all_results.extend(results)
