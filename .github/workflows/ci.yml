@@ -1,12 +1,11 @@
 name: Run Python evals
 
+# Temporarily disabled: no scheduled, pull request, or manual trigger is configured.
+# Restore the previous triggers by reverting this commit.
 on:
   push:
-    paths:
-      - ".github/workflows/ci.yml"
-      - "evals/**"
-      - "src/agents/**"
-      - "src/config.py"
+    branches-ignore:
+      - '**'
 
 permissions:
   pull-requests: write
