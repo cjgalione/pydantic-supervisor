@@ -1,13 +1,10 @@
 name: Daily supervisor smoke
+# Temporarily disabled: no scheduled, pull request, or manual trigger is configured.
+# Restore the previous triggers by reverting this commit.
 on:
-  schedule:
-    - cron: "21 6 * * *"
-  workflow_dispatch:
-    inputs:
-      num_questions:
-        description: "Number of questions to generate for this manual run"
-        required: false
-        default: "100"
+  push:
+    branches-ignore:
+      - '**'
 
 permissions:
   contents: read
